@@ -4,7 +4,6 @@ const path = require("path");
 const os = require("os");
 const { v4: uuidv4 } = require("uuid");
 
-// Preset configs (voice 1.2, bg 0.3 — broadcast standard)
 const PRESETS = {
   varejo:        { voiceVol: 1.2, bgVol: 0.30, fadeIn: 1.5, fadeOut: 1.5 },
   institucional: { voiceVol: 1.2, bgVol: 0.25, fadeIn: 2.0, fadeOut: 2.0 },
@@ -94,7 +93,7 @@ async function processJingleMix(opts) {
   const startSec = typeof jingleVoiceStart === "number" ? jingleVoiceStart : 0;
   const hasExplicitEnd = typeof jingleEndTime === "number" && jingleEndTime > startSec;
 
-  const voiceDspFile = tmpFile(".voice_dsp");
+  const voiceDspFile = tmpFile(".wav");
   runFfmpeg([
     "-i", voiceFile,
     "-af", [
@@ -115,12 +114,12 @@ async function processJingleMix(opts) {
     const voiceEndSec = startSec + voiceDuration;
     const crossfade = 0.15;
 
-    const jingleHeadFile = tmpFile(".jhead");
-    const jingleTailFile = tmpFile(".jtail");
+    const jingleHeadFile = tmpFile(".wav");
+    const jingleTailFile = tmpFile(".wav");
     runFfmpeg(["-i", jingleFile, "-t", String(voiceEndSec + 1), "-y", jingleHeadFile]);
     runFfmpeg(["-i", jingleFile, "-ss", String(jingleEndTime), "-y", jingleTailFile]);
 
-    const mixedHeadFile = tmpFile(".mhead");
+    const mixedHeadFile = tmpFile(".wav");
     runFfmpeg([
       "-i", jingleHeadFile,
       "-i", voiceDspFile,
