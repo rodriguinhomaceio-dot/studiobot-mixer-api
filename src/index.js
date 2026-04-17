@@ -1,7 +1,8 @@
 const express = require("express");
 const { createClient } = require("@supabase/supabase-js");
-const { mixAudio } = require("./mixer");
+const { mixAudio, cleanTake } = require("./mixer");
 const { v4: uuidv4 } = require("uuid");
+const fs = require("fs");
 
 const app = express();
 app.use(express.json({ limit: "50mb" }));
@@ -18,7 +19,7 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-// Auth middleware
+// ─── Auth middleware ─────────────────────────────────────────────────
 function authenticate(req, res, next) {
   if (API_SECRET) {
     const token = req.headers["x-api-secret"];
@@ -29,12 +30,33 @@ function authenticate(req, res, next) {
   next();
 }
 
-// Health check
+// ─── Helper: upload local file to storage and return public URL ──────
+async function uploadToStorage(localPath, { orderId, suffix = "mixed" }) {
+  const buffer = fs.readFileSync(localPath);
+  const fileKey = orderId || uuidv4();
+  const versionToken = `${Date.now()}_${uuidv4().slice(0, 8)}`;
+  const fileName = `locutions/${fileKey}_${versionToken}_${suffix}.mp3`;
+
+  const { error } = await supabase.storage
+    .from("order-files")
+    .upload(fileName, buffer, { contentType: "audio/mpeg", upsert: true });
+
+  try { fs.unlinkSync(localPath); } catch {}
+
+  if (error) {
+    throw new Error(`Storage upload failed: ${error.message}`);
+  }
+
+  const { data: urlData } = supabase.storage.from("order-files").getPublicUrl(fileName);
+  return urlData.publicUrl;
+}
+
+// ─── Health ──────────────────────────────────────────────────────────
 app.get("/health", (req, res) => {
-  res.json({ status: "ok", version: "1.0.0" });
+  res.json({ status: "ok", version: "1.1.0" });
 });
 
-// Main mix endpoint
+// ─── Main mix endpoint ───────────────────────────────────────────────
 app.post("/mix", authenticate, async (req, res) => {
   const startTime = Date.now();
   try {
@@ -51,22 +73,27 @@ app.post("/mix", authenticate, async (req, res) => {
       use_isolator = false,
       exclude_track_url,
       force_track_url,
+      bg_volume, // ← novo: override de volume da trilha em dB
     } = req.body;
 
     if (!voice_url) {
       return res.status(400).json({ error: "voice_url is required" });
     }
 
-    console.log(`[mix] Starting: preset=${preset}, voice_only=${voice_only}, jingle=${!!jingle_url}, order=${order_id || "none"}`);
+    console.log(
+      `[mix] Starting: preset=${preset}, voice_only=${voice_only}, jingle=${!!jingle_url}, order=${order_id || "none"}, bg_volume=${bg_volume ?? "default"}`
+    );
 
-    // If no bg_url and not voice_only and not jingle, pick a track from DB
+    // Selecionar trilha aleatória se necessário
     let backgroundUrl = bg_url || force_track_url;
     let bgTrackName = "Custom";
 
     if (!voice_only && !jingle_url && !backgroundUrl) {
       const category = preset || "varejo";
-      let query = supabase.from("background_tracks").select("id, name, file_url").eq("category", category);
-      const { data: tracks } = await query;
+      const { data: tracks } = await supabase
+        .from("background_tracks")
+        .select("id, name, file_url")
+        .eq("category", category);
 
       if (!tracks || tracks.length === 0) {
         return res.json({
@@ -98,34 +125,16 @@ app.post("/mix", authenticate, async (req, res) => {
       jingleEndTime: jingle_end_time,
       qualityMode: quality_mode,
       useIsolator: use_isolator,
+      bgVolumeDb: bg_volume, // ← passa override pro mixer
     });
 
-    // Upload to Supabase Storage
-    const fs = require("fs");
-    const fileBuffer = fs.readFileSync(outputPath);
-    const fileKey = order_id || uuidv4();
-    const versionToken = `${Date.now()}_${uuidv4().slice(0, 8)}`;
     const suffix = voice_only ? "treated" : jingle_url ? "jingle" : "mixed";
-    const fileName = `locutions/${fileKey}_${versionToken}_${suffix}.mp3`;
+    const publicUrl = await uploadToStorage(outputPath, { orderId: order_id, suffix });
 
-    const { error: uploadError } = await supabase.storage
-      .from("order-files")
-      .upload(fileName, fileBuffer, { contentType: "audio/mpeg", upsert: true });
-
-    // Clean up temp file
-    fs.unlinkSync(outputPath);
-
-    if (uploadError) {
-      console.error("[mix] Upload error:", uploadError);
-      return res.status(500).json({ error: "Failed to upload mixed audio" });
-    }
-
-    const { data: urlData } = supabase.storage.from("order-files").getPublicUrl(fileName);
-
-    // Update order if provided
+    // Atualiza ordem se houver
     if (order_id) {
       const updateData = {
-        mixed_audio_url: urlData.publicUrl,
+        mixed_audio_url: publicUrl,
         mix_preset: preset,
       };
       if (!voice_only && !jingle_url && backgroundUrl) {
@@ -135,10 +144,10 @@ app.post("/mix", authenticate, async (req, res) => {
     }
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(`[mix] Complete in ${elapsed}s: ${urlData.publicUrl}`);
+    console.log(`[mix] Complete in ${elapsed}s: ${publicUrl}`);
 
     res.json({
-      mixed_audio_url: urlData.publicUrl,
+      mixed_audio_url: publicUrl,
       bg_track_name: bgTrackName,
       category: preset,
       voice_only,
@@ -148,6 +157,45 @@ app.post("/mix", authenticate, async (req, res) => {
     });
   } catch (err) {
     console.error("[mix] Error:", err);
+    res.status(500).json({ error: err.message || "Internal server error" });
+  }
+});
+
+// ─── NEW: Clean take endpoint ────────────────────────────────────────
+// Recebe URL de áudio + lista de cuts [{start,end}] e devolve URL limpa.
+app.post("/clean-take", authenticate, async (req, res) => {
+  const startTime = Date.now();
+  try {
+    const { voice_url, cuts, order_id } = req.body;
+
+    if (!voice_url) {
+      return res.status(400).json({ error: "voice_url is required" });
+    }
+
+    const cutsArr = Array.isArray(cuts) ? cuts : [];
+    console.log(`[clean-take] Starting: order=${order_id || "none"}, cuts=${cutsArr.length}`);
+
+    const outputPath = await cleanTake({
+      voiceUrl: voice_url,
+      cuts: cutsArr,
+    });
+
+    const cleanedUrl = await uploadToStorage(outputPath, {
+      orderId: order_id,
+      suffix: "cleaned",
+    });
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    console.log(`[clean-take] Complete in ${elapsed}s: ${cleanedUrl} (${cutsArr.length} cuts)`);
+
+    res.json({
+      cleaned_url: cleanedUrl,
+      cuts_applied: cutsArr.length,
+      success: true,
+      processing_time_sec: parseFloat(elapsed),
+    });
+  } catch (err) {
+    console.error("[clean-take] Error:", err);
     res.status(500).json({ error: err.message || "Internal server error" });
   }
 });
