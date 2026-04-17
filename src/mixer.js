@@ -5,8 +5,6 @@ const os = require("os");
 const { v4: uuidv4 } = require("uuid");
 
 // ─── Presets ──────────────────────────────────────────────────────────
-// bgVol: 0.25 ≈ -12dB (trilha mais baixa, voz protagonista)
-// jingle mantém 0.55 ≈ -5dB (identidade da marca preservada)
 const PRESETS = {
   varejo:        { voiceVol: 1.0, bgVol: 0.25, fadeIn: 1.5, fadeOut: 1.5 },
   institucional: { voiceVol: 1.0, bgVol: 0.22, fadeIn: 2.0, fadeOut: 2.0 },
@@ -15,10 +13,7 @@ const PRESETS = {
   politica:      { voiceVol: 1.0, bgVol: 0.22, fadeIn: 1.5, fadeOut: 1.5 },
 };
 
-// dB → linear
-function dbToLinear(db) {
-  return Math.pow(10, db / 20);
-}
+function dbToLinear(db) { return Math.pow(10, db / 20); }
 
 function tmpFile(ext = ".mp3") {
   return path.join(os.tmpdir(), `mixer_${uuidv4()}${ext}`);
@@ -47,29 +42,50 @@ function getAudioDuration(filePath) {
 }
 
 function runFfmpeg(args) {
-  console.log(`[ffmpeg] ${args.join(" ").substring(0, 200)}...`);
+  console.log(`[ffmpeg] ${args.join(" ").substring(0, 220)}...`);
   execFileSync("ffmpeg", args, { stdio: "pipe", timeout: 300000 });
 }
 
-// ─── Voice DSP chain (broadcast EQ) ───────────────────────────────────
-// Reutilizada em todos os fluxos pra padronizar a cor da voz.
+// ─── BROADCAST EQ — Rádio FM moderna ─────────────────────────────────
+// Filosofia: presença forte (3-5kHz), ar brilhante (10-14kHz),
+// graves controlados, médios limpos, de-esser cirúrgico em 7kHz,
+// saturação suave (aexciter) pra cola analógica.
 function buildVoiceFilterChain(sampleRate, includeAir = true) {
+  const hasHighRate = sampleRate >= 44100;
   const chain = [
-    "highpass=f=80",                                  // remove rumble
-    "equalizer=f=120:t=q:w=1.0:g=1.5",                // corpo
-    "equalizer=f=350:t=q:w=1.2:g=-2.0",               // tira boxiness
-    "equalizer=f=3500:t=q:w=1.0:g=2.5",               // presença
+    // Limpeza de baixas
+    "highpass=f=85",
+    // Corpo controlado (peito da voz)
+    "equalizer=f=130:t=q:w=1.0:g=1.5",
+    // Corta boxiness / lama
+    "equalizer=f=320:t=q:w=1.2:g=-2.5",
+    // Inteligibilidade (consoantes)
+    "equalizer=f=2000:t=q:w=1.0:g=1.5",
+    // PRESENÇA FORTE — assinatura FM moderna
+    "equalizer=f=4500:t=q:w=1.1:g=3.5",
   ];
-  if (includeAir && sampleRate >= 44100) {
-    chain.push("equalizer=f=8000:t=q:w=1.5:g=2.0");   // ar
-    chain.push("equalizer=f=12000:t=q:w=1.5:g=1.0");  // brilho
+
+  if (hasHighRate && includeAir) {
+    // Ar brilhante (alta frequência aberta)
+    chain.push("equalizer=f=10000:t=q:w=1.4:g=2.5");
+    chain.push("equalizer=f=13500:t=q:w=1.8:g=1.5");
   }
-  chain.push("equalizer=f=6500:t=q:w=2.0:g=-1.5");    // de-esser leve
-  chain.push("acompressor=threshold=-20dB:ratio=2.8:attack=5:release=140");
+
+  // De-esser dedicado — corte cirúrgico em sibilância
+  chain.push("equalizer=f=6800:t=q:w=3.5:g=-3.5");
+  chain.push("equalizer=f=7800:t=q:w=3.5:g=-2.5");
+
+  // Compressor broadcast (controle dinâmico)
+  chain.push("acompressor=threshold=-20dB:ratio=3:attack=4:release=120:makeup=2");
+
+  // Saturação suave (calor analógico — aexciter adiciona harmônicos)
+  if (hasHighRate) {
+    chain.push("aexciter=level_in=1:level_out=1:amount=1.2:drive=4:blend=0.3:freq=7500:ceil=14000:listen=0");
+  }
+
   return chain;
 }
 
-// Resolve volume da trilha: prioridade ao body.bg_volume_db, senão usa preset
 function resolveBgVol(opts, presetBgVol) {
   if (typeof opts.bgVolumeDb === "number" && opts.bgVolumeDb !== -1) {
     return dbToLinear(opts.bgVolumeDb);
@@ -77,7 +93,7 @@ function resolveBgVol(opts, presetBgVol) {
   return presetBgVol;
 }
 
-// ─── Voice only (Apenas Editar) ───────────────────────────────────────
+// ─── Voice only ───────────────────────────────────────────────────────
 async function processVoiceOnly(opts) {
   const { voiceUrl, qualityMode } = opts;
   const voiceFile = tmpFile(".voice_in");
@@ -90,7 +106,6 @@ async function processVoiceOnly(opts) {
 
   const chain = [
     ...buildVoiceFilterChain(sampleRate, true),
-    // remove pausas longas (>0.5s) deixando 0.2s de respiro — conservador
     "silenceremove=stop_periods=-1:stop_duration=0.5:stop_threshold=-40dB",
     "loudnorm=I=-14:TP=-1:LRA=11",
   ].join(",");
@@ -108,7 +123,7 @@ async function processVoiceOnly(opts) {
   return outputFile;
 }
 
-// ─── Jingle mix (lógica preservada — volume do jingle NÃO muda) ──────
+// ─── Jingle mix (intocado — usa mesma EQ broadcast em mono) ───────────
 async function processJingleMix(opts) {
   const { voiceUrl, jingleUrl, preset, jingleVoiceStart, jingleEndTime, qualityMode } = opts;
   const voiceFile = tmpFile(".voice_in");
@@ -142,7 +157,7 @@ async function processJingleMix(opts) {
   ]);
 
   const voiceVol = config.voiceVol;
-  const jingleVol = config.bgVol; // jingle NÃO usa override do cliente
+  const jingleVol = config.bgVol;
 
   if (hasExplicitEnd) {
     const voiceEndSec = startSec + voiceDuration;
@@ -211,7 +226,7 @@ async function processJingleMix(opts) {
   return outputFile;
 }
 
-// ─── Standard mix (voz + trilha de fundo) ─────────────────────────────
+// ─── Standard mix (voz + trilha) com stereo widener leve na trilha ───
 async function processStandardMix(opts) {
   const { voiceUrl, bgUrl, preset, qualityMode } = opts;
   const voiceFile = tmpFile(".voice_in");
@@ -230,26 +245,36 @@ async function processStandardMix(opts) {
   const sampleRate = isSafe ? 22050 : isLong ? 22050 : 44100;
   const bitrate = isSafe ? "128k" : isLong ? "128k" : "192k";
   const totalDuration = voiceDuration + config.fadeOut + 0.5;
+  const hasHighRate = sampleRate >= 44100;
 
-  // override do cliente (bg_volume_db) tem prioridade sobre o preset
   const bgVol = resolveBgVol(opts, config.bgVol);
 
+  // Voz: mono → centralizada (pan via aformat stereo padrão = centro)
   const voiceChain = [
     `aformat=sample_rates=${sampleRate}:channel_layouts=mono`,
-    ...buildVoiceFilterChain(sampleRate, sampleRate >= 44100),
+    ...buildVoiceFilterChain(sampleRate, hasHighRate),
     `volume=${config.voiceVol}`,
+    // Volta pra estéreo centralizado pra somar com a trilha estéreo
+    "aformat=channel_layouts=stereo",
   ].join(",");
+
+  // Trilha: estéreo + widener leve (extrastereo ~1.4 = sutil)
+  // extrastereo amplifica a diferença L/R; valores 1.0-1.5 são seguros.
+  const bgChain = [
+    `aformat=sample_rates=${sampleRate}:channel_layouts=stereo`,
+    `atrim=0:${totalDuration}`,
+    `afade=t=in:d=${config.fadeIn}`,
+    `afade=t=out:st=${voiceDuration}:d=${config.fadeOut}`,
+    hasHighRate ? "extrastereo=m=1.4:c=disabled" : null,
+    `volume=${bgVol}`,
+  ].filter(Boolean).join(",");
 
   runFfmpeg([
     "-i", voiceFile,
     "-stream_loop", "-1", "-i", bgFile,
     "-filter_complex", [
       `[0:a]${voiceChain}[voice]`,
-      `[1:a]aformat=sample_rates=${sampleRate}:channel_layouts=mono,` +
-        `atrim=0:${totalDuration},` +
-        `afade=t=in:d=${config.fadeIn},` +
-        `afade=t=out:st=${voiceDuration}:d=${config.fadeOut},` +
-        `volume=${bgVol}[bg]`,
+      `[1:a]${bgChain}[bg]`,
       `[bg][voice]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[mixed]`,
       `[mixed]loudnorm=I=-14:TP=-1:LRA=11[out]`,
     ].join(";"),
@@ -267,22 +292,19 @@ async function processStandardMix(opts) {
   return outputFile;
 }
 
-// ─── Clean take: corta repetições por timestamps (vindo do Gemini) ────
-// cuts = [{start, end}, ...] em segundos
+// ─── Clean take (cortes por timestamp) ────────────────────────────────
 async function cleanTake({ voiceUrl, cuts }) {
   const voiceFile = tmpFile(".voice_in");
   const outputFile = tmpFile(".mp3");
   await downloadFile(voiceUrl, voiceFile);
 
   if (!Array.isArray(cuts) || cuts.length === 0) {
-    // sem cortes — só transcoda mantendo qualidade
     runFfmpeg(["-i", voiceFile, "-c:a", "libmp3lame", "-b:a", "192k", "-y", outputFile]);
     try { fs.unlinkSync(voiceFile); } catch {}
     return outputFile;
   }
 
   const totalDuration = getAudioDuration(voiceFile);
-  // Inverte cuts → keep ranges
   const sorted = [...cuts]
     .filter(c => typeof c.start === "number" && typeof c.end === "number" && c.end > c.start)
     .sort((a, b) => a.start - b.start);
@@ -290,18 +312,15 @@ async function cleanTake({ voiceUrl, cuts }) {
   const keep = [];
   let cursor = 0;
   for (const c of sorted) {
-    const cutStart = Math.max(0, c.start - 0.04); // margem -40ms
+    const cutStart = Math.max(0, c.start - 0.04);
     const cutEnd = Math.min(totalDuration, c.end + 0.04);
     if (cutStart > cursor) keep.push([cursor, cutStart]);
     cursor = cutEnd;
   }
   if (cursor < totalDuration) keep.push([cursor, totalDuration]);
 
-  if (keep.length === 0) {
-    throw new Error("cleanTake: all audio would be cut");
-  }
+  if (keep.length === 0) throw new Error("cleanTake: all audio would be cut");
 
-  // Monta filter_complex com atrim + concat
   const parts = keep.map(([s, e], i) =>
     `[0:a]atrim=start=${s.toFixed(3)}:end=${e.toFixed(3)},asetpts=PTS-STARTPTS[seg${i}]`
   );
