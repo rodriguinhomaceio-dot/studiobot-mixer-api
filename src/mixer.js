@@ -5,11 +5,11 @@ const os = require("os");
 const { v4: uuidv4 } = require("uuid");
 
 const PRESETS = {
-  varejo:        { voiceVol: 1.2, bgVol: 0.30, fadeIn: 1.5, fadeOut: 1.5 },
-  institucional: { voiceVol: 1.2, bgVol: 0.25, fadeIn: 2.0, fadeOut: 2.0 },
-  radio_indoor:  { voiceVol: 1.2, bgVol: 0.30, fadeIn: 1.5, fadeOut: 1.5 },
-  jingle:        { voiceVol: 1.2, bgVol: 0.35, fadeIn: 1.0, fadeOut: 1.5 },
-  politica:      { voiceVol: 1.2, bgVol: 0.25, fadeIn: 1.5, fadeOut: 1.5 },
+  varejo:        { voiceVol: 1.0, bgVol: 0.55, fadeIn: 1.5, fadeOut: 1.5 },
+  institucional: { voiceVol: 1.0, bgVol: 0.50, fadeIn: 2.0, fadeOut: 2.0 },
+  radio_indoor:  { voiceVol: 1.0, bgVol: 0.55, fadeIn: 1.5, fadeOut: 1.5 },
+  jingle:        { voiceVol: 1.0, bgVol: 0.55, fadeIn: 1.0, fadeOut: 1.5 },
+  politica:      { voiceVol: 1.0, bgVol: 0.50, fadeIn: 1.5, fadeOut: 1.5 },
 };
 
 function tmpFile(ext = ".mp3") {
@@ -107,8 +107,8 @@ async function processJingleMix(opts) {
     "-y", voiceDspFile,
   ]);
 
-  const duckRatio = 0.75;
   const voiceVol = config.voiceVol;
+  const jingleVol = config.bgVol;
 
   if (hasExplicitEnd) {
     const voiceEndSec = startSec + voiceDuration;
@@ -124,10 +124,9 @@ async function processJingleMix(opts) {
       "-i", jingleHeadFile,
       "-i", voiceDspFile,
       "-filter_complex", [
-        `[0:a]aformat=sample_rates=${sampleRate}:channel_layouts=mono[jingle]`,
-        `[1:a]aformat=sample_rates=${sampleRate}:channel_layouts=mono,volume=${voiceVol},adelay=${Math.round(startSec * 1000)}|${Math.round(startSec * 1000)},asplit=2[voice][voicesc]`,
-        `[jingle][voicesc]sidechaincompress=threshold=0.02:ratio=${1 / (1 - duckRatio)}:attack=5:release=100:level_in=1:level_sc=1[ducked]`,
-        `[ducked][voice]amix=inputs=2:duration=longest:dropout_transition=0[out]`,
+        `[0:a]aformat=sample_rates=${sampleRate}:channel_layouts=mono,volume=${jingleVol}[jingle]`,
+        `[1:a]aformat=sample_rates=${sampleRate}:channel_layouts=mono,volume=${voiceVol},adelay=${Math.round(startSec * 1000)}|${Math.round(startSec * 1000)}[voice]`,
+        `[jingle][voice]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[out]`,
       ].join(";"),
       "-map", "[out]",
       "-t", String(voiceEndSec),
@@ -158,10 +157,9 @@ async function processJingleMix(opts) {
       "-i", jingleFile,
       "-i", voiceDspFile,
       "-filter_complex", [
-        `[0:a]aformat=sample_rates=${sampleRate}:channel_layouts=mono,atrim=0:${totalDuration},afade=t=out:st=${fadeOutStart}:d=${config.fadeOut}[jingle]`,
-        `[1:a]aformat=sample_rates=${sampleRate}:channel_layouts=mono,volume=${voiceVol},adelay=${Math.round(startSec * 1000)}|${Math.round(startSec * 1000)},asplit=2[voice][voicesc]`,
-        `[jingle][voicesc]sidechaincompress=threshold=0.02:ratio=${1 / (1 - duckRatio)}:attack=5:release=100[ducked]`,
-        `[ducked][voice]amix=inputs=2:duration=first:dropout_transition=0[mixed]`,
+        `[0:a]aformat=sample_rates=${sampleRate}:channel_layouts=mono,atrim=0:${totalDuration},afade=t=out:st=${fadeOutStart}:d=${config.fadeOut},volume=${jingleVol}[jingle]`,
+        `[1:a]aformat=sample_rates=${sampleRate}:channel_layouts=mono,volume=${voiceVol},adelay=${Math.round(startSec * 1000)}|${Math.round(startSec * 1000)}[voice]`,
+        `[jingle][voice]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[mixed]`,
         `[mixed]loudnorm=I=-14:TP=-1:LRA=11[out]`,
       ].join(";"),
       "-map", "[out]",
@@ -208,14 +206,13 @@ async function processStandardMix(opts) {
         `equalizer=f=3000:t=q:w=1.2:g=2.5,` +
         (sampleRate >= 44100 ? `equalizer=f=8000:t=q:w=1.5:g=2.0,equalizer=f=10000:t=q:w=1.5:g=1.0,` : "") +
         `acompressor=threshold=-18dB:ratio=3:attack=3:release=100,` +
-        `volume=${config.voiceVol},asplit=2[voice][voicesc]`,
+        `volume=${config.voiceVol}[voice]`,
       `[1:a]aformat=sample_rates=${sampleRate}:channel_layouts=mono,` +
         `atrim=0:${totalDuration},` +
         `afade=t=in:d=${config.fadeIn},` +
         `afade=t=out:st=${voiceDuration}:d=${config.fadeOut},` +
         `volume=${config.bgVol}[bg]`,
-      `[bg][voicesc]sidechaincompress=threshold=0.015:ratio=8:attack=5:release=100:level_in=1:level_sc=1[ducked]`,
-      `[ducked][voice]amix=inputs=2:duration=first:dropout_transition=0[mixed]`,
+      `[bg][voice]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[mixed]`,
       `[mixed]loudnorm=I=-14:TP=-1:LRA=11[out]`,
     ].join(";"),
     "-map", "[out]",
