@@ -16,18 +16,13 @@ const PRESETS = {
 };
 
 // ─── Defaults de segurança da trilha ─────────────────────────────────
-// Trilha termina N segundos ANTES do fim da voz.
 const DEFAULT_BG_END_OFFSET_SEC = 1.0;
-// Teto absoluto: trilha NUNCA pode passar disso. -15 dB garante que
-// nunca iguale nem ultrapasse a voz, mesmo no refrão mais forte.
 const DEFAULT_BG_VOLUME_MAX_DB = -15;
-// Compressor AGRESSIVO da trilha (evita refrão estourar).
 const DEFAULT_BG_COMPRESS_THRESHOLD_DB = -22;
 const DEFAULT_BG_COMPRESS_RATIO = 6;
 
 // ─── PRESETS DE VOZ ──────────────────────────────────────────────────
 const VOICE_PRESETS = {
-  // VAREJO clássico
   varejo: {
     highpass: 85,
     body:            { freq: 130,  gain: 1.5 },
@@ -46,7 +41,6 @@ const VOICE_PRESETS = {
     exciter:    { amount: 1.2, drive: 4, blend: 0.3 },
   },
 
-  // INSTITUCIONAL — sóbrio
   institucional: {
     highpass: 80,
     body:            { freq: 150,  gain: 2.0 },
@@ -59,7 +53,6 @@ const VOICE_PRESETS = {
     exciter:    { amount: 0.8, drive: 3, blend: 0.2 },
   },
 
-  // NEUTRO — limpo
   neutro: {
     highpass: 75,
     body:            { freq: 140,  gain: 1.0 },
@@ -72,7 +65,6 @@ const VOICE_PRESETS = {
     exciter:    null,
   },
 
-  // PUNCH — promo de cinema
   punch: {
     highpass: 90,
     body:            { freq: 120,  gain: 2.5 },
@@ -152,22 +144,18 @@ function buildVoiceFilterChain(sampleRate, voicePresetName = "broadcast_ssl", in
   const hasHighRate = sampleRate >= 44100;
   const chain = [];
 
-  // 1. Noise gate (limpa silêncios)
   if (preset.gate) {
     const g = preset.gate;
     chain.push(`agate=threshold=${dbToLinear(g.threshold).toFixed(5)}:ratio=${g.ratio || 2}:attack=${g.attack || 20}:release=${g.release || 250}`);
   }
 
-  // 2. Noise reduction (tipo NS1)
   if (preset.noiseReduction) {
     const nr = preset.noiseReduction;
     chain.push(`afftdn=nr=${nr.amount || 12}:nf=${nr.floor || -25}:tn=1`);
   }
 
-  // 3. High-pass
   chain.push(`highpass=f=${preset.highpass}`);
 
-  // 4. EQ
   chain.push(`equalizer=f=${preset.body.freq}:t=q:w=1.0:g=${preset.body.gain}`);
   chain.push(`equalizer=f=${preset.mudCut.freq}:t=q:w=1.2:g=${preset.mudCut.gain}`);
   chain.push(`equalizer=f=${preset.intelligibility.freq}:t=q:w=1.0:g=${preset.intelligibility.gain}`);
@@ -179,24 +167,20 @@ function buildVoiceFilterChain(sampleRate, voicePresetName = "broadcast_ssl", in
     }
   }
 
-  // 5. De-esser
   if (preset.deEsser) {
     for (const band of preset.deEsser) {
       chain.push(`equalizer=f=${band.freq}:t=q:w=3.5:g=${band.gain}`);
     }
   }
 
-  // 6. Comp 1 (RVox-like)
   const c = preset.compressor;
   chain.push(`acompressor=threshold=${c.threshold}dB:ratio=${c.ratio}:attack=${c.attack}:release=${c.release}:makeup=${c.makeup}`);
 
-  // 7. Comp 2 opcional (RChannel-like, cola)
   if (preset.compressor2) {
     const c2 = preset.compressor2;
     chain.push(`acompressor=threshold=${c2.threshold}dB:ratio=${c2.ratio}:attack=${c2.attack}:release=${c2.release}:makeup=${c2.makeup}`);
   }
 
-  // 8. Exciter (saturação analógica)
   if (hasHighRate && preset.exciter) {
     const e = preset.exciter;
     chain.push(`aexciter=level_in=1:level_out=1:amount=${e.amount}:drive=${e.drive}:blend=${e.blend}:freq=7500:ceil=14000:listen=0`);
@@ -206,7 +190,7 @@ function buildVoiceFilterChain(sampleRate, voicePresetName = "broadcast_ssl", in
 }
 
 // ─── MASTER GLOBAL ───────────────────────────────────────────────────
-// Replica: SSL Bus Comp + L316 EQ + Saturação Analog + Loudnorm + L1+ TruePeak Limiter
+// SSL Bus Comp + L316 EQ + Saturação Analog + Loudnorm + L1+ TruePeak Limiter
 function buildMasterChain(opts = {}) {
   const masterEq = opts.masterEq !== false;
   const masterGlue = opts.masterGlue !== false;
@@ -218,34 +202,23 @@ function buildMasterChain(opts = {}) {
 
   const chain = [];
 
-  // 1. Low-cut anti-mud
-  if (masterEq) {
-    chain.push("highpass=f=40");
-  }
+  if (masterEq) chain.push("highpass=f=40");
 
-  // 2. SSL Bus Comp (glue) — ratio 4:1, attack 30ms
   if (masterGlue) {
     chain.push("acompressor=threshold=-12dB:ratio=4:attack=30:release=100:makeup=1");
   }
 
-  // 3. EQ Master — presença mid + corte ultra-altas (replica L316)
   if (masterEq) {
     chain.push("equalizer=f=1800:t=q:w=1.2:g=1.5");
     chain.push("lowpass=f=18000");
-    if (masterAir) {
-      chain.push("equalizer=f=12000:t=q:w=1.0:g=1.0");
-    }
+    if (masterAir) chain.push("equalizer=f=12000:t=q:w=1.0:g=1.0");
   }
 
-  // 4. Saturação master (SSL Analog ON)
   if (masterSat) {
     chain.push("aexciter=level_in=1:level_out=1:amount=0.6:drive=2:blend=0.15:freq=8000:ceil=14000:listen=0");
   }
 
-  // 5. Loudnorm EBU R128
   chain.push(`loudnorm=I=${targetLufs}:TP=${truePeak}:LRA=${lra}`);
-
-  // 6. Limiter brick-wall TruePeak (L1+ Ultramaximizer)
   chain.push(`alimiter=limit=${dbToLinear(truePeak).toFixed(4)}:level=disabled:asc=1`);
 
   return chain.join(",");
@@ -414,21 +387,17 @@ async function processStandardMix(opts) {
   const hasHighRate = sampleRate >= 44100;
   const voicePresetName = resolveVoicePreset(opts, config);
 
-  // ─── Timing: trilha termina 1s ANTES da voz ──────────────────────
   const bgEndOffset = typeof opts.bgEndOffset === "number" ? opts.bgEndOffset : DEFAULT_BG_END_OFFSET_SEC;
   const bgEffectiveEnd = Math.max(config.fadeIn + 1.0, voiceDuration - bgEndOffset);
   const bgFadeOutStart = Math.max(0, bgEffectiveEnd - config.fadeOut);
   const totalDuration = voiceDuration + 0.5;
 
-  // ─── Volume com TETO ABSOLUTO INVIOLÁVEL ─────────────────────────
   const bgVol = resolveBgVolumeLinear(opts, config.bgVol);
 
-  // ─── Compressor AGRESSIVO da trilha ──────────────────────────────
   const bgCompress = opts.bgCompress !== false;
   const compThreshold = typeof opts.bgCompressThresholdDb === "number" ? opts.bgCompressThresholdDb : DEFAULT_BG_COMPRESS_THRESHOLD_DB;
   const compRatio = typeof opts.bgCompressRatio === "number" ? opts.bgCompressRatio : DEFAULT_BG_COMPRESS_RATIO;
 
-  // Voz: mono → estéreo centralizado (com preset completo)
   const voiceChain = [
     `aformat=sample_rates=${sampleRate}:channel_layouts=mono`,
     ...buildVoiceFilterChain(sampleRate, voicePresetName, hasHighRate),
@@ -436,7 +405,6 @@ async function processStandardMix(opts) {
     "aformat=channel_layouts=stereo",
   ].join(",");
 
-  // Trilha: corte temporal + compressor PESADO + limiter de segurança + volume final
   const bgChainParts = [
     `aformat=sample_rates=${sampleRate}:channel_layouts=stereo`,
     `atrim=0:${bgEffectiveEnd.toFixed(3)}`,
@@ -444,15 +412,13 @@ async function processStandardMix(opts) {
     `afade=t=out:st=${bgFadeOutStart.toFixed(3)}:d=${config.fadeOut}`,
   ];
   if (bgCompress) {
-    // Compressor agressivo amassa refrão antes do volume final
-    bgChainParts.push(`acompressor=threshold=${compThreshold}dB:ratio=${compRatio}:attack=15:release=200:makeup=0`);
+    // FIX: makeup mínimo aceito pelo ffmpeg é 1 (era 0 antes — causava crash)
+    bgChainParts.push(`acompressor=threshold=${compThreshold}dB:ratio=${compRatio}:attack=15:release=200:makeup=1`);
   }
   if (hasHighRate) {
     bgChainParts.push("extrastereo=m=1.4:c=disabled");
   }
   bgChainParts.push(`volume=${bgVol.toFixed(4)}`);
-  // LIMITER DE SEGURANÇA NA TRILHA: trava absoluta no teto.
-  // Garante que mesmo somando estéreo, a trilha NUNCA passe do bgVolumeMax.
   bgChainParts.push(`alimiter=limit=${bgVol.toFixed(4)}:level=disabled:asc=1`);
   bgChainParts.push(`apad=whole_dur=${totalDuration.toFixed(3)}`);
   const bgChain = bgChainParts.join(",");
