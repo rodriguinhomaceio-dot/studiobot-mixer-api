@@ -5,19 +5,21 @@ const os = require("os");
 const { v4: uuidv4 } = require("uuid");
 
 // ─── Presets de mix (volume da trilha + fades + voice preset) ────────
-// bgVol em LINEAR. Padrão da indústria: trilha 18-21 dB abaixo da voz.
-//   0.10 ≈ -20 dB  |  0.09 ≈ -21 dB  |  0.55 ≈ -5.2 dB (jingle)
+// bgVol em LINEAR. Trilha um pouco mais presente, mas voz continua protagonista.
+//   0.13 ≈ -17.7 dB  |  0.12 ≈ -18.4 dB  |  0.55 ≈ -5.2 dB (jingle)
 const PRESETS = {
-  varejo:        { voiceVol: 1.0, bgVol: 0.10, fadeIn: 1.5, fadeOut: 1.5, voicePreset: "broadcast_ssl" },
-  institucional: { voiceVol: 1.0, bgVol: 0.09, fadeIn: 2.0, fadeOut: 2.0, voicePreset: "broadcast_ssl" },
-  radio_indoor:  { voiceVol: 1.0, bgVol: 0.10, fadeIn: 1.5, fadeOut: 1.5, voicePreset: "broadcast_ssl" },
-  jingle:        { voiceVol: 1.0, bgVol: 0.55, fadeIn: 1.0, fadeOut: 1.5, voicePreset: "broadcast_ssl" },
-  politica:      { voiceVol: 1.0, bgVol: 0.09, fadeIn: 1.5, fadeOut: 1.5, voicePreset: "broadcast_ssl" },
+  varejo:        { voiceVol: 1.0, bgVol: 0.13, fadeIn: 1.5, fadeOut: 1.2, voicePreset: "broadcast_ssl" },
+  institucional: { voiceVol: 1.0, bgVol: 0.12, fadeIn: 2.0, fadeOut: 1.5, voicePreset: "broadcast_ssl" },
+  radio_indoor:  { voiceVol: 1.0, bgVol: 0.13, fadeIn: 1.5, fadeOut: 1.2, voicePreset: "broadcast_ssl" },
+  jingle:        { voiceVol: 1.0, bgVol: 0.55, fadeIn: 1.0, fadeOut: 1.2, voicePreset: "broadcast_ssl" },
+  politica:      { voiceVol: 1.0, bgVol: 0.12, fadeIn: 1.5, fadeOut: 1.2, voicePreset: "broadcast_ssl" },
 };
 
 // ─── Defaults de segurança da trilha ─────────────────────────────────
-const DEFAULT_BG_END_OFFSET_SEC = 1.0;
-const DEFAULT_BG_VOLUME_MAX_DB = -15;
+// Trilha termina 0.5s ANTES da voz (era 1s).
+const DEFAULT_BG_END_OFFSET_SEC = 0.5;
+// Teto absoluto: -13dB (era -15dB) — trilha um pouco mais alta, mas nunca iguala a voz.
+const DEFAULT_BG_VOLUME_MAX_DB = -13;
 const DEFAULT_BG_COMPRESS_THRESHOLD_DB = -22;
 const DEFAULT_BG_COMPRESS_RATIO = 6;
 
@@ -190,7 +192,6 @@ function buildVoiceFilterChain(sampleRate, voicePresetName = "broadcast_ssl", in
 }
 
 // ─── MASTER GLOBAL ───────────────────────────────────────────────────
-// SSL Bus Comp + L316 EQ + Saturação Analog + Loudnorm + L1+ TruePeak Limiter
 function buildMasterChain(opts = {}) {
   const masterEq = opts.masterEq !== false;
   const masterGlue = opts.masterGlue !== false;
@@ -364,11 +365,11 @@ async function processJingleMix(opts) {
 }
 
 // ─── Standard mix (voz + trilha) ─────────────────────────────────────
-// Garantias:
-//   1. Trilha termina 1s ANTES da voz (bgEndOffset)
-//   2. Compressor AGRESSIVO (ratio 6:1, threshold -22dB) amassa picos do refrão
-//   3. Teto absoluto -15dB (bgVolumeMax) — trilha NUNCA iguala a voz
-//   4. SSL bus comp no master atenua qualquer pico residual da soma
+// AJUSTES desta versão:
+//   1. Trilha termina 0.5s ANTES da voz (era 1.0s)
+//   2. Volume da trilha um pouco mais alto: -17dB médio, teto -13dB (era -20/-15dB)
+//   3. Compressor 6:1 mantido — refrão da trilha continua sob controle
+//   4. Voz continua protagonista absoluta
 async function processStandardMix(opts) {
   const { voiceUrl, bgUrl, preset, qualityMode } = opts;
   const voiceFile = tmpFile(".voice_in");
@@ -412,7 +413,6 @@ async function processStandardMix(opts) {
     `afade=t=out:st=${bgFadeOutStart.toFixed(3)}:d=${config.fadeOut}`,
   ];
   if (bgCompress) {
-    // FIX: makeup mínimo aceito pelo ffmpeg é 1 (era 0 antes — causava crash)
     bgChainParts.push(`acompressor=threshold=${compThreshold}dB:ratio=${compRatio}:attack=15:release=200:makeup=1`);
   }
   if (hasHighRate) {
