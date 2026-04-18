@@ -4,29 +4,44 @@ const path = require("path");
 const os = require("os");
 const { v4: uuidv4 } = require("uuid");
 
-// ─── Presets de mix ──────────────────────────────────────────────────
+// ─── PRESETS DE MIX ──────────────────────────────────────────────────
+// Padrão extraído do "EDIT_MIX_RADIO_HONDA_HRV": rádio FM brasileira,
+// trilha presente equilibrada com voz dominante.
 const PRESETS = {
-  varejo:        { voiceVol: 1.0, bgVol: 0.20, fadeIn: 1.5, fadeOut: 1.2, voicePreset: "broadcast_ssl" },
-  institucional: { voiceVol: 1.0, bgVol: 0.18, fadeIn: 2.0, fadeOut: 1.5, voicePreset: "broadcast_ssl" },
-  radio_indoor:  { voiceVol: 1.0, bgVol: 0.20, fadeIn: 1.5, fadeOut: 1.2, voicePreset: "broadcast_ssl" },
-  jingle:        { voiceVol: 1.0, bgVol: 0.60, fadeIn: 1.0, fadeOut: 1.2, voicePreset: "broadcast_ssl" },
-  politica:      { voiceVol: 1.0, bgVol: 0.18, fadeIn: 1.5, fadeOut: 1.2, voicePreset: "broadcast_ssl" },
+  varejo:        { voiceVol: 1.0, bgVol: 0.32, fadeIn: 1.5, fadeOut: 1.2, voicePreset: "radio_fm_br" },
+  institucional: { voiceVol: 1.0, bgVol: 0.30, fadeIn: 2.0, fadeOut: 1.5, voicePreset: "radio_fm_br" },
+  radio_indoor:  { voiceVol: 1.0, bgVol: 0.32, fadeIn: 1.5, fadeOut: 1.2, voicePreset: "radio_fm_br" },
+  jingle:        { voiceVol: 1.0, bgVol: 0.65, fadeIn: 1.0, fadeOut: 1.2, voicePreset: "radio_fm_br" },
+  politica:      { voiceVol: 1.0, bgVol: 0.30, fadeIn: 1.5, fadeOut: 1.2, voicePreset: "radio_fm_br" },
 };
 
 const DEFAULT_BG_END_OFFSET_SEC = 0.5;
-const DEFAULT_BG_VOLUME_MAX_DB = -10;
-const DEFAULT_BG_COMPRESS_THRESHOLD_DB = -22;
-const DEFAULT_BG_COMPRESS_RATIO = 6;
+const DEFAULT_BG_VOLUME_MAX_DB = -7;
+const DEFAULT_BG_COMPRESS_THRESHOLD_DB = -26;
+const DEFAULT_BG_COMPRESS_RATIO = 3;
 
-// ─── Time Stretch (NOVO) ─────────────────────────────────────────────
-// Limites de segurança para preservar naturalidade da voz
-const TIME_STRETCH_MIN = 0.92;   // máx. -8% (estende até 8.7%)
-const TIME_STRETCH_MAX = 1.08;   // máx. +8% (acelera até 8%)
-const TIME_STRETCH_DEADZONE = 0.02; // ignora desvios < 2%
+// ─── MASTER PADRÃO RÁDIO FM (extraído do referência Honda HRV) ───────
+//   I: -9.8 LUFS | LRA: 1.1 | TP: +0.6 dBFS
+// Aplicamos -10 LUFS, LRA 3, TP -0.3 (margem mínima pra não clipar)
+const MASTER_RADIO_FM = {
+  lufs: -10,
+  truePeak: -0.3,
+  lra: 3,
+  glueThreshold: -18,
+  glueRatio: 6,
+  glueAttack: 10,
+  glueRelease: 80,
+  glueMakeup: 2,
+};
+
+// ─── TIME STRETCH ────────────────────────────────────────────────────
+// IMPORTANTE: só aplica quando áudio EXCEDE o target (ratio > 1).
+// Se áudio está dentro ou abaixo do tempo, NÃO mexe.
+const TIME_STRETCH_MAX = 1.08;            // máx. +8% (acelera)
+const TIME_STRETCH_DEADZONE = 0.02;       // ignora desvios < 2%
 const SILENCE_REMOVE_THRESHOLD_DB = -38;
-const SILENCE_REMOVE_MIN_DURATION = 0.35; // pausas > 350ms são reduzidas
+const SILENCE_REMOVE_MIN_DURATION = 0.35;
 
-// Mapa de durações alvo (segundos) por nome curto
 const TARGET_DURATION_MAP = {
   "15": 15, "15s": 15,
   "20": 20, "20s": 20,
@@ -49,106 +64,93 @@ function resolveTargetDuration(opts) {
   return null;
 }
 
-// Aplica silenceremove + atempo conforme desvio. Retorna novo path do arquivo.
+// Time stretch SÓ encurta. Nunca estende áudio curto.
 function applyTimeStretch(voiceFile, targetDuration, sampleRate, opts = {}) {
-  const stretchEnabled = opts.timeStretch !== false; // default: ON
+  const stretchEnabled = opts.timeStretch !== false;
   if (!stretchEnabled || !targetDuration) return voiceFile;
 
   const currentDuration = getAudioDuration(voiceFile);
   if (!currentDuration || currentDuration <= 0) return voiceFile;
 
-  const ratio = currentDuration / targetDuration; // >1 = precisa acelerar
-  const deviation = Math.abs(ratio - 1);
+  const ratio = currentDuration / targetDuration;
 
-  console.log(`[time-stretch] current=${currentDuration.toFixed(2)}s target=${targetDuration}s ratio=${ratio.toFixed(4)} deviation=${(deviation*100).toFixed(1)}%`);
+  console.log(`[time-stretch] current=${currentDuration.toFixed(2)}s target=${targetDuration}s ratio=${ratio.toFixed(4)}`);
 
-  // Dentro da deadzone — não mexe
-  if (deviation < TIME_STRETCH_DEADZONE) {
-    console.log(`[time-stretch] dentro da deadzone (<2%), sem ajuste`);
+  // Áudio dentro ou ABAIXO do target → não mexe
+  if (ratio <= 1 + TIME_STRETCH_DEADZONE) {
+    console.log(`[time-stretch] áudio dentro/abaixo do target, sem ajuste`);
     return voiceFile;
   }
 
+  // Áudio EXCEDE target — aplica silenceremove + atempo
   const stretchedFile = tmpFile(".stretched.wav");
-  const filters = [];
-
-  // 1. Remove pausas longas se áudio está LONGO (precisa encurtar)
-  if (ratio > 1) {
-    filters.push(
-      `silenceremove=stop_periods=-1:stop_duration=${SILENCE_REMOVE_MIN_DURATION}:stop_threshold=${SILENCE_REMOVE_THRESHOLD_DB}dB:stop_silence=0.25`
-    );
-  }
-
-  // 2. Renderiza intermediário só com silenceremove pra reavaliar
   const intermediateFile = tmpFile(".silcut.wav");
-  if (filters.length > 0) {
-    runFfmpeg(["-i", voiceFile, "-af", filters.join(","), "-ar", String(sampleRate), "-ac", "1", "-y", intermediateFile]);
-    const newDuration = getAudioDuration(intermediateFile);
-    console.log(`[time-stretch] após silenceremove: ${newDuration.toFixed(2)}s`);
 
-    const newRatio = newDuration / targetDuration;
-    const newDeviation = Math.abs(newRatio - 1);
+  runFfmpeg([
+    "-i", voiceFile,
+    "-af", `silenceremove=stop_periods=-1:stop_duration=${SILENCE_REMOVE_MIN_DURATION}:stop_threshold=${SILENCE_REMOVE_THRESHOLD_DB}dB:stop_silence=0.25`,
+    "-ar", String(sampleRate), "-ac", "1", "-y", intermediateFile,
+  ]);
+  const newDuration = getAudioDuration(intermediateFile);
+  console.log(`[time-stretch] após silenceremove: ${newDuration.toFixed(2)}s`);
 
-    if (newDeviation < TIME_STRETCH_DEADZONE) {
-      console.log(`[time-stretch] silenceremove resolveu, sem atempo`);
-      return intermediateFile;
-    }
+  const newRatio = newDuration / targetDuration;
 
-    // 3. Aplica atempo clampado
-    const clampedRatio = Math.max(TIME_STRETCH_MIN, Math.min(TIME_STRETCH_MAX, newRatio));
-    console.log(`[time-stretch] aplicando atempo=${clampedRatio.toFixed(4)} (clamped de ${newRatio.toFixed(4)})`);
-    runFfmpeg(["-i", intermediateFile, "-af", `atempo=${clampedRatio.toFixed(4)}`, "-ar", String(sampleRate), "-ac", "1", "-y", stretchedFile]);
-    try { fs.unlinkSync(intermediateFile); } catch {}
-    return stretchedFile;
-  } else {
-    // Áudio CURTO — só atempo (não dá pra adicionar silêncio realista)
-    const clampedRatio = Math.max(TIME_STRETCH_MIN, Math.min(TIME_STRETCH_MAX, ratio));
-    console.log(`[time-stretch] áudio curto, aplicando atempo=${clampedRatio.toFixed(4)}`);
-    runFfmpeg(["-i", voiceFile, "-af", `atempo=${clampedRatio.toFixed(4)}`, "-ar", String(sampleRate), "-ac", "1", "-y", stretchedFile]);
-    return stretchedFile;
+  if (newRatio <= 1 + TIME_STRETCH_DEADZONE) {
+    console.log(`[time-stretch] silenceremove resolveu, sem atempo`);
+    return intermediateFile;
   }
+
+  const clampedRatio = Math.min(TIME_STRETCH_MAX, newRatio);
+  console.log(`[time-stretch] aplicando atempo=${clampedRatio.toFixed(4)} (de ${newRatio.toFixed(4)})`);
+  runFfmpeg(["-i", intermediateFile, "-af", `atempo=${clampedRatio.toFixed(4)}`, "-ar", String(sampleRate), "-ac", "1", "-y", stretchedFile]);
+  try { fs.unlinkSync(intermediateFile); } catch {}
+  return stretchedFile;
 }
 
 // ─── PRESETS DE VOZ ──────────────────────────────────────────────────
 const VOICE_PRESETS = {
+  // NOVO: replica EQ/dinâmica do referência Honda HRV (rádio FM brasileira)
+  // Voz na cara, presença forte, ar marcante, body firme, compressão pesada
+  radio_fm_br: {
+    gate: { threshold: -55, ratio: 2, attack: 5, release: 250 },
+    noiseReduction: { amount: 8, floor: -25 },
+    highpass: 75,
+    body: { freq: 160, gain: 2.0 },              // corpo cheio
+    mudCut: { freq: 380, gain: -3.0 },           // tira lama
+    intelligibility: { freq: 2200, gain: 2.5 },  // articulação
+    presence: { freq: 4500, gain: 4.0 },         // presença marcante
+    air: [{ freq: 9000, gain: 3.0 }, { freq: 13000, gain: 2.5 }], // ar/brilho
+    deEsser: [{ freq: 6500, gain: -3.5 }, { freq: 7800, gain: -2.5 }],
+    compressor: { threshold: -22, ratio: 5, attack: 3, release: 100, makeup: 3 },   // 1ª compressão pesada
+    compressor2: { threshold: -10, ratio: 3, attack: 8, release: 80, makeup: 2 },   // glue final
+    exciter: { amount: 1.6, drive: 4, blend: 0.4 },
+  },
   varejo: {
-    highpass: 85,
-    body: { freq: 130, gain: 1.5 },
-    mudCut: { freq: 320, gain: -2.5 },
-    intelligibility: { freq: 2000, gain: 1.5 },
-    presence: { freq: 4500, gain: 3.5 },
+    highpass: 85, body: { freq: 130, gain: 1.5 }, mudCut: { freq: 320, gain: -2.5 },
+    intelligibility: { freq: 2000, gain: 1.5 }, presence: { freq: 4500, gain: 3.5 },
     air: [{ freq: 10000, gain: 2.5 }, { freq: 13500, gain: 1.5 }],
     deEsser: [{ freq: 6800, gain: -3.5 }, { freq: 7800, gain: -2.5 }],
     compressor: { threshold: -20, ratio: 3, attack: 4, release: 120, makeup: 2 },
     exciter: { amount: 1.2, drive: 4, blend: 0.3 },
   },
   institucional: {
-    highpass: 80,
-    body: { freq: 150, gain: 2.0 },
-    mudCut: { freq: 350, gain: -1.8 },
-    intelligibility: { freq: 1800, gain: 1.0 },
-    presence: { freq: 4000, gain: 2.0 },
-    air: [{ freq: 11000, gain: 1.5 }],
-    deEsser: [{ freq: 7000, gain: -3.0 }],
+    highpass: 80, body: { freq: 150, gain: 2.0 }, mudCut: { freq: 350, gain: -1.8 },
+    intelligibility: { freq: 1800, gain: 1.0 }, presence: { freq: 4000, gain: 2.0 },
+    air: [{ freq: 11000, gain: 1.5 }], deEsser: [{ freq: 7000, gain: -3.0 }],
     compressor: { threshold: -22, ratio: 2.5, attack: 8, release: 180, makeup: 1.5 },
     exciter: { amount: 0.8, drive: 3, blend: 0.2 },
   },
   neutro: {
-    highpass: 75,
-    body: { freq: 140, gain: 1.0 },
-    mudCut: { freq: 300, gain: -1.5 },
-    intelligibility: { freq: 2200, gain: 0.8 },
-    presence: { freq: 4000, gain: 1.5 },
-    air: [{ freq: 12000, gain: 1.0 }],
-    deEsser: [{ freq: 7200, gain: -2.5 }],
+    highpass: 75, body: { freq: 140, gain: 1.0 }, mudCut: { freq: 300, gain: -1.5 },
+    intelligibility: { freq: 2200, gain: 0.8 }, presence: { freq: 4000, gain: 1.5 },
+    air: [{ freq: 12000, gain: 1.0 }], deEsser: [{ freq: 7200, gain: -2.5 }],
     compressor: { threshold: -24, ratio: 2, attack: 10, release: 200, makeup: 1 },
     exciter: null,
   },
   punch: {
-    highpass: 90,
-    body: { freq: 120, gain: 2.5 },
-    mudCut: { freq: 350, gain: -3.5 },
-    intelligibility: { freq: 2200, gain: 2.5 },
-    presence: { freq: 5000, gain: 4.5 },
+    highpass: 90, body: { freq: 120, gain: 2.5 }, mudCut: { freq: 350, gain: -3.5 },
+    intelligibility: { freq: 2200, gain: 2.5 }, presence: { freq: 5000, gain: 4.5 },
     air: [{ freq: 10000, gain: 3.0 }, { freq: 14000, gain: 2.0 }],
     deEsser: [{ freq: 6500, gain: -4.0 }, { freq: 7800, gain: -3.0 }],
     compressor: { threshold: -18, ratio: 4, attack: 2, release: 90, makeup: 3 },
@@ -157,11 +159,8 @@ const VOICE_PRESETS = {
   broadcast_ssl: {
     gate: { threshold: -55, ratio: 2, attack: 5, release: 250 },
     noiseReduction: { amount: 10, floor: -25 },
-    highpass: 70,
-    body: { freq: 200, gain: 1.0 },
-    mudCut: { freq: 400, gain: -2.0 },
-    intelligibility: { freq: 2500, gain: 2.0 },
-    presence: { freq: 4000, gain: 3.0 },
+    highpass: 70, body: { freq: 200, gain: 1.0 }, mudCut: { freq: 400, gain: -2.0 },
+    intelligibility: { freq: 2500, gain: 2.0 }, presence: { freq: 4000, gain: 3.0 },
     air: [{ freq: 8000, gain: 2.5 }, { freq: 12000, gain: 2.0 }],
     deEsser: [{ freq: 6500, gain: -3.0 }, { freq: 7800, gain: -2.0 }],
     compressor: { threshold: -22, ratio: 4, attack: 5, release: 174, makeup: 3 },
@@ -195,8 +194,8 @@ function runFfmpeg(args) {
   execFileSync("ffmpeg", args, { stdio: "pipe", timeout: 300000 });
 }
 
-function buildVoiceFilterChain(sampleRate, voicePresetName = "broadcast_ssl", includeAir = true) {
-  const preset = VOICE_PRESETS[voicePresetName] || VOICE_PRESETS.broadcast_ssl;
+function buildVoiceFilterChain(sampleRate, voicePresetName = "radio_fm_br", includeAir = true) {
+  const preset = VOICE_PRESETS[voicePresetName] || VOICE_PRESETS.radio_fm_br;
   const hasHighRate = sampleRate >= 44100;
   const chain = [];
   if (preset.gate) {
@@ -232,12 +231,15 @@ function buildMasterChain(opts = {}) {
   const masterGlue = opts.masterGlue !== false;
   const masterSat = opts.masterSat !== false;
   const masterAir = opts.masterAir === true;
-  const targetLufs = typeof opts.masterLufs === "number" ? opts.masterLufs : -14;
-  const truePeak = typeof opts.masterTruePeak === "number" ? opts.masterTruePeak : -1;
-  const lra = typeof opts.masterLra === "number" ? opts.masterLra : 11;
+  const targetLufs = typeof opts.masterLufs === "number" ? opts.masterLufs : MASTER_RADIO_FM.lufs;
+  const truePeak = typeof opts.masterTruePeak === "number" ? opts.masterTruePeak : MASTER_RADIO_FM.truePeak;
+  const lra = typeof opts.masterLra === "number" ? opts.masterLra : MASTER_RADIO_FM.lra;
   const chain = [];
   if (masterEq) chain.push("highpass=f=40");
-  if (masterGlue) chain.push("acompressor=threshold=-12dB:ratio=4:attack=30:release=100:makeup=1");
+  if (masterGlue) {
+    const g = MASTER_RADIO_FM;
+    chain.push(`acompressor=threshold=${g.glueThreshold}dB:ratio=${g.glueRatio}:attack=${g.glueAttack}:release=${g.glueRelease}:makeup=${g.glueMakeup}`);
+  }
   if (masterEq) {
     chain.push("equalizer=f=1800:t=q:w=1.2:g=1.5");
     chain.push("lowpass=f=18000");
@@ -260,7 +262,7 @@ function resolveBgVolumeLinear(opts, presetBgVol) {
 function resolveVoicePreset(opts, config) {
   if (opts.voicePreset && VOICE_PRESETS[opts.voicePreset]) return opts.voicePreset;
   if (config && config.voicePreset && VOICE_PRESETS[config.voicePreset]) return config.voicePreset;
-  return "broadcast_ssl";
+  return "radio_fm_br";
 }
 
 async function processVoiceOnly(opts) {
@@ -273,7 +275,6 @@ async function processVoiceOnly(opts) {
   const bitrate = isSafe ? "128k" : "192k";
   const voicePresetName = resolveVoicePreset(opts, null);
 
-  // Time stretch ANTES da cadeia DSP
   const targetDur = resolveTargetDuration(opts);
   const stretchedVoice = applyTimeStretch(voiceFile, targetDur, sampleRate, opts);
 
@@ -283,7 +284,7 @@ async function processVoiceOnly(opts) {
     buildMasterChain(opts),
   ].join(",");
   runFfmpeg(["-i", stretchedVoice, "-af", chain, "-ar", String(sampleRate), "-ac", "2", "-b:a", bitrate, "-y", outputFile]);
-  [voiceFile, stretchedVoice].forEach(f => { try { if (f !== voiceFile || stretchedVoice === voiceFile) fs.unlinkSync(f); } catch {} });
+
   try { fs.unlinkSync(voiceFile); } catch {}
   if (stretchedVoice !== voiceFile) try { fs.unlinkSync(stretchedVoice); } catch {}
   return outputFile;
@@ -300,7 +301,6 @@ async function processJingleMix(opts) {
   const sampleRate = isSafe ? 22050 : 44100;
   const bitrate = isSafe ? "128k" : "192k";
 
-  // Time stretch
   const targetDur = resolveTargetDuration(opts);
   const stretchedVoice = applyTimeStretch(voiceFile, targetDur, sampleRate, opts);
 
@@ -369,7 +369,6 @@ async function processStandardMix(opts) {
   const config = PRESETS[preset] || PRESETS.varejo;
   const isSafe = qualityMode === "safe";
 
-  // Time stretch ANTES de medir duração
   const tmpRate = isSafe ? 22050 : 44100;
   const stretchedVoice = applyTimeStretch(voiceFile, resolveTargetDuration(opts), tmpRate, opts);
 
