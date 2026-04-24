@@ -5,21 +5,24 @@ const os = require("os");
 const { v4: uuidv4 } = require("uuid");
 
 // ─── Presets de mix ──────────────────────────────────────────────────
-// Relação voz/trilha ~15 dB (padrão rádio FM brasileiro):
-// voz ~-6 dBFS pico  |  trilha ~-21 dBFS pico — presente do início ao fim, sem competir.
-//   0.18 ≈ -14.9 dB  |  0.16 ≈ -15.9 dB  |  0.32 ≈ -9.9 dB (jingle)
+// Voz ~0 dBFS | trilha ~-12 dBFS — margem 12 dB GARANTIDA pelo limiter+compressor duplo.
+// Trilha presente do início ao fim, sem competir com a voz mesmo no refrão.
+//   0.25 ≈ -12.0 dB  |  0.22 ≈ -13.2 dB  |  0.36 ≈ -8.9 dB (jingle)
 const PRESETS = {
-  varejo:        { voiceVol: 1.0, bgVol: 0.18, fadeIn: 1.2, fadeOut: 1.2, voicePreset: "radio_fm_br" },
-  institucional: { voiceVol: 1.0, bgVol: 0.16, fadeIn: 1.8, fadeOut: 1.5, voicePreset: "radio_fm_br" },
-  radio_indoor:  { voiceVol: 1.0, bgVol: 0.18, fadeIn: 1.2, fadeOut: 1.2, voicePreset: "radio_fm_br" },
-  jingle:        { voiceVol: 1.0, bgVol: 0.32, fadeIn: 0.8, fadeOut: 1.2, voicePreset: "radio_fm_br" },
-  politica:      { voiceVol: 1.0, bgVol: 0.16, fadeIn: 1.2, fadeOut: 1.2, voicePreset: "radio_fm_br" },
+  varejo:        { voiceVol: 1.0, bgVol: 0.25, fadeIn: 1.2, fadeOut: 1.2, voicePreset: "radio_fm_br" },
+  institucional: { voiceVol: 1.0, bgVol: 0.22, fadeIn: 1.8, fadeOut: 1.5, voicePreset: "radio_fm_br" },
+  radio_indoor:  { voiceVol: 1.0, bgVol: 0.25, fadeIn: 1.2, fadeOut: 1.2, voicePreset: "radio_fm_br" },
+  jingle:        { voiceVol: 1.0, bgVol: 0.36, fadeIn: 0.8, fadeOut: 1.2, voicePreset: "radio_fm_br" },
+  politica:      { voiceVol: 1.0, bgVol: 0.22, fadeIn: 1.2, fadeOut: 1.2, voicePreset: "radio_fm_br" },
 };
 
 const DEFAULT_BG_END_OFFSET_SEC = 0.3;
-const DEFAULT_BG_VOLUME_MAX_DB = -14;
-const DEFAULT_BG_COMPRESS_THRESHOLD_DB = -22;
-const DEFAULT_BG_COMPRESS_RATIO = 3;
+const DEFAULT_BG_VOLUME_MAX_DB = -10;            // teto absoluto da trilha
+const DEFAULT_BG_COMPRESS_THRESHOLD_DB = -28;    // 1º estágio: pega mais sinal
+const DEFAULT_BG_COMPRESS_RATIO = 6;             // 1º estágio: amassa firme
+const DEFAULT_BG_COMPRESS2_THRESHOLD_DB = -18;   // 2º estágio: mata picos remanescentes (refrão)
+const DEFAULT_BG_COMPRESS2_RATIO = 4;
+const DEFAULT_BG_PRELIMITER = 0.7;               // limiter pré-gain (-3 dB) trava dinâmica interna
 
 // ─── Time Stretch (só comprime quando passa do tempo verificado) ─────
 const TIME_STRETCH_MIN = 0.92;
@@ -340,6 +343,9 @@ async function processStandardMix(opts) {
   const bgCompress = opts.bgCompress !== false;
   const compThreshold = typeof opts.bgCompressThresholdDb === "number" ? opts.bgCompressThresholdDb : DEFAULT_BG_COMPRESS_THRESHOLD_DB;
   const compRatio = typeof opts.bgCompressRatio === "number" ? opts.bgCompressRatio : DEFAULT_BG_COMPRESS_RATIO;
+  const comp2Threshold = typeof opts.bgCompress2ThresholdDb === "number" ? opts.bgCompress2ThresholdDb : DEFAULT_BG_COMPRESS2_THRESHOLD_DB;
+  const comp2Ratio = typeof opts.bgCompress2Ratio === "number" ? opts.bgCompress2Ratio : DEFAULT_BG_COMPRESS2_RATIO;
+  const preLimiter = typeof opts.bgPreLimiter === "number" ? opts.bgPreLimiter : DEFAULT_BG_PRELIMITER;
 
   const voiceChain = [
     `aformat=sample_rates=${sampleRate}:channel_layouts=mono`,
@@ -354,10 +360,24 @@ async function processStandardMix(opts) {
     `afade=t=in:d=${config.fadeIn}`,
     `afade=t=out:st=${bgFadeOutStart.toFixed(3)}:d=${config.fadeOut}`,
   ];
-  if (bgCompress) bgChainParts.push(`acompressor=threshold=${compThreshold}dB:ratio=${compRatio}:attack=15:release=200:makeup=1`);
+
+  if (bgCompress) {
+    // 1º estágio: agarra o corpo do sinal (threshold baixo, ratio alto)
+    bgChainParts.push(`acompressor=threshold=${compThreshold}dB:ratio=${compRatio}:attack=10:release=180:makeup=2`);
+    // 2º estágio: amassa picos remanescentes (refrão batendo mais forte que o resto)
+    bgChainParts.push(`acompressor=threshold=${comp2Threshold}dB:ratio=${comp2Ratio}:attack=5:release=100:makeup=1`);
+  }
+
   if (hasHighRate) bgChainParts.push("extrastereo=m=1.4:c=disabled");
+
+  // Limiter pré-gain: trava dinâmica interna ANTES de aplicar o volume final
+  bgChainParts.push(`alimiter=limit=${preLimiter.toFixed(3)}:level=disabled:asc=1`);
+
   bgChainParts.push(`volume=${bgVol.toFixed(4)}`);
+
+  // Limiter final no valor exato de bgVol: garante teto absoluto, trilha NUNCA passa da voz
   bgChainParts.push(`alimiter=limit=${bgVol.toFixed(4)}:level=disabled:asc=1`);
+
   bgChainParts.push(`apad=whole_dur=${totalDuration.toFixed(3)}`);
   const bgChain = bgChainParts.join(",");
   const masterChain = buildMasterChain(opts);
