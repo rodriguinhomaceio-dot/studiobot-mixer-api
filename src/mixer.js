@@ -9,11 +9,11 @@ const { v4: uuidv4 } = require("uuid");
 const PRESETS = {
   nd_padrao: {
     comp: 0.25, width: 1.35, limit: 0.32, ceiling: -0.8, release: 1.2,
-    bgVol: 0.18, fadeIn: 1.2, fadeOut: 1.0, voicePreset: "varejo",
+    bgVol: 0.18, fadeIn: 1.2, fadeOut: 0.6, voicePreset: "varejo",
   },
   nd_agressivo: {
     comp: 0.32, width: 1.42, limit: 0.42, ceiling: -0.8, release: 1.0,
-    bgVol: 0.20, fadeIn: 1.2, fadeOut: 1.0, voicePreset: "varejo",
+    bgVol: 0.20, fadeIn: 1.2, fadeOut: 0.6, voicePreset: "varejo",
   },
   nd_voice: {
     comp: 0.20, width: 1.15, limit: 0.25, ceiling: -1.0, release: 1.4,
@@ -21,11 +21,11 @@ const PRESETS = {
   },
   nd_jingle: {
     comp: 0.34, width: 1.38, limit: 0.44, ceiling: -0.8, release: 1.0,
-    bgVol: 0.32, fadeIn: 1.0, fadeOut: 1.0, voicePreset: "jingle",
+    bgVol: 0.32, fadeIn: 1.0, fadeOut: 0.6, voicePreset: "jingle",
   },
   nd_institucional: {
     comp: 0.22, width: 1.25, limit: 0.30, ceiling: -0.9, release: 1.3,
-    bgVol: 0.15, fadeIn: 1.8, fadeOut: 1.2, voicePreset: "institucional",
+    bgVol: 0.15, fadeIn: 1.8, fadeOut: 0.6, voicePreset: "institucional",
   },
 };
 
@@ -95,8 +95,9 @@ const VOICE_PRESETS = {
 const DEFAULT_BG_VOLUME_MAX_DB = -12.0;
 const DEFAULT_BG_COMPRESS_THRESHOLD_DB = -16;
 const DEFAULT_BG_COMPRESS_RATIO = 1.8;
-// Trilha termina 0.5s ANTES do fim da voz (respiro curto pra voz fechar limpa)
-const BG_END_GAP_SEC = 0.5;
+
+// Trilha termina JUNTO com a voz (sem gap)
+const BG_END_GAP_SEC = 0;
 
 // ─── Utilidades ───────────────────────────────────────────────────────
 function runFfmpeg(args) {
@@ -154,12 +155,12 @@ function resolveBgVol(opts, fallbackLinear) {
 }
 
 // Resolve gap final da trilha (segundos antes do fim da voz)
-// Mínimo de 0.5s — respiro curto antes da voz fechar
+// Por padrão 0 — trilha termina junto com a voz
 function resolveBgEndGap(opts) {
   let gap = BG_END_GAP_SEC;
   if (typeof opts.bgEndOffset === "number") gap = opts.bgEndOffset;
   else if (typeof opts.bg_end_offset === "number") gap = opts.bg_end_offset;
-  return Math.max(gap, 0.5);
+  return Math.max(gap, 0);
 }
 
 // Resolve teto absoluto da trilha (dB) — nunca acima de -12dB
@@ -209,15 +210,19 @@ async function processStandardMix(opts) {
     preset = "nd_padrao",
     outputFile = tmpFile("mp3"),
   } = opts;
+
   const p = PRESETS[preset] || PRESETS.nd_padrao;
   const voiceFile = tmpFile("mp3");
   const bgFile = tmpFile("mp3");
+
   await Promise.all([
     downloadFile(voiceUrl, voiceFile),
     downloadFile(bgUrl, bgFile),
   ]);
+
   const voiceDur = ffprobeDuration(voiceFile);
-  // Gap final da trilha (mín 0.5s antes do fim da voz)
+
+  // Gap final da trilha (padrão 0 — trilha termina junto com a voz)
   const bgEndGap = resolveBgEndGap(opts);
   const bgEndTime = Math.max(
     p.fadeIn + p.fadeOut + 0.1,
@@ -225,6 +230,7 @@ async function processStandardMix(opts) {
   );
   const fadeOutStart = Math.max(p.fadeIn, bgEndTime - p.fadeOut);
   const totalDur = voiceDur + 0.5;
+
   const bgVol = resolveBgVol(opts, p.bgVol);
   const compThr =
     typeof opts.bgCompressThreshold === "number"
@@ -238,12 +244,12 @@ async function processStandardMix(opts) {
       : (typeof opts.bg_compress_ratio === "number"
         ? opts.bg_compress_ratio
         : DEFAULT_BG_COMPRESS_RATIO);
+
   const bgMaxDb = resolveBgVolumeMax(opts);
   const bgMaxLin = dbToLinear(bgMaxDb);
   const masterCeiling = dbToLinear(p.ceiling ?? -0.8);
 
   const voiceChain = buildVoiceChain(p.voicePreset);
-
   const bgChain = [
     "highpass=f=35",
     `acompressor=threshold=${compThr}dB:ratio=${compRatio}:attack=20:release=250:makeup=1.0`,
@@ -294,17 +300,21 @@ async function processJingleMix(opts) {
     jingleEndTime,
     outputFile = tmpFile("mp3"),
   } = opts;
+
   const p = PRESETS[preset] || PRESETS.nd_jingle;
   const voiceFile = tmpFile("mp3");
   const jingleFile = tmpFile("mp3");
+
   await Promise.all([
     downloadFile(voiceUrl, voiceFile),
     downloadFile(jingleUrl, jingleFile),
   ]);
+
   const voiceDur = ffprobeDuration(voiceFile);
   const jingleDur = ffprobeDuration(jingleFile);
   const endTime = jingleEndTime || jingleVoiceStart + voiceDur + 2;
   const totalDur = Math.max(jingleDur, endTime + 1);
+
   const voiceChain = buildVoiceChain(p.voicePreset);
   const masterCeiling = dbToLinear(p.ceiling ?? -0.8);
   const jingleVol = resolveBgVol(opts, p.bgVol);
@@ -345,11 +355,14 @@ async function processVoiceOnly(opts) {
     preset = "nd_voice",
     outputFile = tmpFile("mp3"),
   } = opts;
+
   const p = PRESETS[preset] || PRESETS.nd_voice;
   const voiceFile = tmpFile("mp3");
   await downloadFile(voiceUrl, voiceFile);
+
   const voiceChain = buildVoiceChain(p.voicePreset);
   const filter = `[0:a]${voiceChain}[out]`;
+
   runFfmpeg([
     "-i", voiceFile,
     "-filter_complex", filter,
@@ -360,9 +373,11 @@ async function processVoiceOnly(opts) {
     "-ac", "2",
     "-y", outputFile,
   ]);
+
   try {
     fs.unlinkSync(voiceFile);
   } catch {}
+
   return outputFile;
 }
 
