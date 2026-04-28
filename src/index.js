@@ -73,7 +73,6 @@ app.post("/mix", authenticate, async (req, res) => {
       use_isolator = false,
       exclude_track_url,
       force_track_url,
-      bg_volume, // ← novo: override de volume da trilha em dB
     } = req.body;
 
     if (!voice_url) {
@@ -81,7 +80,7 @@ app.post("/mix", authenticate, async (req, res) => {
     }
 
     console.log(
-      `[mix] Starting: preset=${preset}, voice_only=${voice_only}, jingle=${!!jingle_url}, order=${order_id || "none"}, bg_volume=${bg_volume ?? "default"}`
+      `[mix] Starting: preset=${preset}, voice_only=${voice_only}, jingle=${!!jingle_url}, order=${order_id || "none"}`
     );
 
     // Selecionar trilha aleatória se necessário
@@ -125,7 +124,6 @@ app.post("/mix", authenticate, async (req, res) => {
       jingleEndTime: jingle_end_time,
       qualityMode: quality_mode,
       useIsolator: use_isolator,
-      bgVolumeDb: bg_volume, // ← passa override pro mixer
     });
 
     const suffix = voice_only ? "treated" : jingle_url ? "jingle" : "mixed";
