@@ -5,15 +5,15 @@ const os = require("os");
 const { v4: uuidv4 } = require("uuid");
 
 // ─── PRESETS DE MASTER ────────────────────────────────────────────────
-// Voz à frente, trilha de suporte (mais baixa)
+// Voz à frente, trilha de suporte (mais discreta)
 const PRESETS = {
   nd_padrao: {
     comp: 0.25, width: 1.35, limit: 0.32, ceiling: -0.8, release: 1.2,
-    bgVol: 0.55, fadeIn: 1.2, fadeOut: 1.5, voicePreset: "varejo",
+    bgVol: 0.35, fadeIn: 1.2, fadeOut: 1.5, voicePreset: "varejo",
   },
   nd_agressivo: {
     comp: 0.32, width: 1.42, limit: 0.42, ceiling: -0.8, release: 1.0,
-    bgVol: 0.62, fadeIn: 1.2, fadeOut: 1.5, voicePreset: "varejo",
+    bgVol: 0.40, fadeIn: 1.2, fadeOut: 1.5, voicePreset: "varejo",
   },
   nd_voice: {
     comp: 0.20, width: 1.15, limit: 0.25, ceiling: -1.0, release: 1.4,
@@ -21,11 +21,11 @@ const PRESETS = {
   },
   nd_jingle: {
     comp: 0.34, width: 1.38, limit: 0.44, ceiling: -0.8, release: 1.0,
-    bgVol: 0.65, fadeIn: 1.0, fadeOut: 1.5, voicePreset: "jingle",
+    bgVol: 0.55, fadeIn: 1.0, fadeOut: 1.5, voicePreset: "jingle",
   },
   nd_institucional: {
     comp: 0.22, width: 1.25, limit: 0.30, ceiling: -0.9, release: 1.3,
-    bgVol: 0.50, fadeIn: 1.8, fadeOut: 2.0, voicePreset: "institucional",
+    bgVol: 0.32, fadeIn: 1.8, fadeOut: 2.0, voicePreset: "institucional",
   },
 };
 
@@ -91,10 +91,11 @@ const VOICE_PRESETS = {
 };
 
 // ─── Defaults ─────────────────────────────────────────────────────────
-// Trilha mais discreta: teto baixo e compressão um pouco mais firme
-const DEFAULT_BG_VOLUME_MAX_DB = -3.0;
+// Trilha bem discreta: teto baixo e compressão firme
+const DEFAULT_BG_VOLUME_MAX_DB = -6.0;
 const DEFAULT_BG_COMPRESS_THRESHOLD_DB = -16;
 const DEFAULT_BG_COMPRESS_RATIO = 1.8;
+// Trilha termina 1.5s antes da voz (gap ANTES do fim, dá respiro pra voz)
 const BG_END_GAP_SEC = 1.5;
 
 // ─── Utilidades ───────────────────────────────────────────────────────
@@ -139,11 +140,32 @@ function dbToLinear(db) {
   return Math.pow(10, db / 20);
 }
 
-// Resolve volume (linear) com prioridade: bgVolumeDb > bgVolume > default
+// Resolve volume (linear) com prioridade:
+//   bgVolumeDb (dB camelCase) > bg_volume (dB snake_case, vindo da Edge Function)
+//   > bgVolume (linear camelCase) > default do preset
+// Convenção: o Edge manda `bg_volume` em DB (negativo, ex: -9). Se vier > 0, trata como linear.
 function resolveBgVol(opts, fallbackLinear) {
   if (typeof opts.bgVolumeDb === "number") return dbToLinear(opts.bgVolumeDb);
+  if (typeof opts.bg_volume === "number" && opts.bg_volume !== -1) {
+    // Edge Function manda em dB (valor <= 0). Se vier positivo, assume linear.
+    return opts.bg_volume <= 0 ? dbToLinear(opts.bg_volume) : opts.bg_volume;
+  }
   if (typeof opts.bgVolume === "number") return opts.bgVolume;
   return fallbackLinear;
+}
+
+// Resolve gap final da trilha (segundos antes do fim da voz)
+function resolveBgEndGap(opts) {
+  if (typeof opts.bgEndOffset === "number") return opts.bgEndOffset;
+  if (typeof opts.bg_end_offset === "number") return opts.bg_end_offset;
+  return BG_END_GAP_SEC;
+}
+
+// Resolve teto absoluto da trilha (dB)
+function resolveBgVolumeMax(opts) {
+  if (typeof opts.bgVolumeMax === "number") return opts.bgVolumeMax;
+  if (typeof opts.bg_volume_max === "number") return opts.bg_volume_max;
+  return DEFAULT_BG_VOLUME_MAX_DB;
 }
 
 // ─── Limpeza de take ──────────────────────────────────────────────────
@@ -197,32 +219,38 @@ async function processStandardMix(opts) {
   ]);
 
   const voiceDur = ffprobeDuration(voiceFile);
+
+  // Gap final da trilha (segundos antes do fim da voz)
+  const bgEndGap = resolveBgEndGap(opts);
+
   const bgEndTime = Math.max(
     p.fadeIn + p.fadeOut + 0.1,
-    voiceDur - BG_END_GAP_SEC
+    voiceDur - bgEndGap
   );
   const fadeOutStart = Math.max(p.fadeIn, bgEndTime - p.fadeOut);
   const totalDur = voiceDur + 0.5;
 
-  // Volume da trilha: bgVolumeDb (dB) > bgVolume (linear) > preset default
+  // Volume da trilha: bgVolumeDb > bg_volume (Edge) > bgVolume > preset default
   const bgVol = resolveBgVol(opts, p.bgVol);
 
   const compThr =
     typeof opts.bgCompressThreshold === "number"
       ? opts.bgCompressThreshold
-      : DEFAULT_BG_COMPRESS_THRESHOLD_DB;
+      : (typeof opts.bg_compress_threshold === "number"
+        ? opts.bg_compress_threshold
+        : DEFAULT_BG_COMPRESS_THRESHOLD_DB);
+
   const compRatio =
     typeof opts.bgCompressRatio === "number"
       ? opts.bgCompressRatio
-      : DEFAULT_BG_COMPRESS_RATIO;
-  const bgMaxDb =
-    typeof opts.bgVolumeMax === "number"
-      ? opts.bgVolumeMax
-      : DEFAULT_BG_VOLUME_MAX_DB;
+      : (typeof opts.bg_compress_ratio === "number"
+        ? opts.bg_compress_ratio
+        : DEFAULT_BG_COMPRESS_RATIO);
 
+  const bgMaxDb = resolveBgVolumeMax(opts);
   const bgMaxLin = dbToLinear(bgMaxDb);
-  const masterCeiling = dbToLinear(p.ceiling ?? -0.8);
 
+  const masterCeiling = dbToLinear(p.ceiling ?? -0.8);
   const voiceChain = buildVoiceChain(p.voicePreset);
 
   const bgChain = [
@@ -232,7 +260,7 @@ async function processStandardMix(opts) {
     `afade=t=in:st=0:d=${p.fadeIn}`,
     `afade=t=out:st=${fadeOutStart.toFixed(2)}:d=${p.fadeOut}`,
     `atrim=0:${bgEndTime.toFixed(2)}`,
-    `apad=pad_dur=${BG_END_GAP_SEC + 0.5}`,
+    `apad=pad_dur=${bgEndGap + 0.5}`,
     `alimiter=limit=${bgMaxLin.toFixed(4)}:level=disabled:asc=1`,
   ].join(",");
 
@@ -294,7 +322,7 @@ async function processJingleMix(opts) {
   const voiceChain = buildVoiceChain(p.voicePreset);
   const masterCeiling = dbToLinear(p.ceiling ?? -0.8);
 
-  // Volume do jingle: bgVolumeDb (dB) > bgVolume (linear) > preset default
+  // Volume do jingle: bgVolumeDb > bg_volume (Edge) > bgVolume > preset default
   const jingleVol = resolveBgVol(opts, p.bgVol);
 
   const filter = [
@@ -336,6 +364,7 @@ async function processVoiceOnly(opts) {
 
   const p = PRESETS[preset] || PRESETS.nd_voice;
   const voiceFile = tmpFile("mp3");
+
   await downloadFile(voiceUrl, voiceFile);
 
   const voiceChain = buildVoiceChain(p.voicePreset);
