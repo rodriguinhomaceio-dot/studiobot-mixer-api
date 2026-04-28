@@ -8,23 +8,23 @@ const { v4: uuidv4 } = require("uuid");
 // Voz à frente, trilha bem discreta (mais baixa)
 const PRESETS = {
   nd_padrao: {
-    comp: 0.25, width: 1.35, limit: 0.32, ceiling: -0.8, release: 1.2,
+    comp: 0.25, width: 1.35, limit: 0.32, ceiling: -0.3, release: 1.2,
     bgVol: 0.18, fadeIn: 1.2, fadeOut: 0.6, voicePreset: "varejo",
   },
   nd_agressivo: {
-    comp: 0.32, width: 1.42, limit: 0.42, ceiling: -0.8, release: 1.0,
+    comp: 0.32, width: 1.42, limit: 0.42, ceiling: -0.3, release: 1.0,
     bgVol: 0.20, fadeIn: 1.2, fadeOut: 0.6, voicePreset: "varejo",
   },
   nd_voice: {
-    comp: 0.20, width: 1.15, limit: 0.25, ceiling: -1.0, release: 1.4,
+    comp: 0.20, width: 1.15, limit: 0.25, ceiling: -0.3, release: 1.4,
     bgVol: 0.00, fadeIn: 2.0, fadeOut: 2.0, voicePreset: "institucional",
   },
   nd_jingle: {
-    comp: 0.34, width: 1.38, limit: 0.44, ceiling: -0.8, release: 1.0,
+    comp: 0.34, width: 1.38, limit: 0.44, ceiling: -0.3, release: 1.0,
     bgVol: 0.32, fadeIn: 1.0, fadeOut: 0.6, voicePreset: "jingle",
   },
   nd_institucional: {
-    comp: 0.22, width: 1.25, limit: 0.30, ceiling: -0.9, release: 1.3,
+    comp: 0.22, width: 1.25, limit: 0.30, ceiling: -0.3, release: 1.3,
     bgVol: 0.15, fadeIn: 1.8, fadeOut: 0.6, voicePreset: "institucional",
   },
 };
@@ -141,16 +141,8 @@ function dbToLinear(db) {
   return Math.pow(10, db / 20);
 }
 
-// Resolve volume (linear) com prioridade:
-//   bgVolumeDb (dB camelCase) > bg_volume (dB snake_case, vindo da Edge Function)
-//   > bgVolume (linear camelCase) > default do preset
-// Convenção: o Edge manda `bg_volume` em DB (negativo, ex: -15). Se vier > 0, trata como linear.
-function resolveBgVol(opts, fallbackLinear) {
-  if (typeof opts.bgVolumeDb === "number") return dbToLinear(opts.bgVolumeDb);
-  if (typeof opts.bg_volume === "number" && opts.bg_volume !== -1) {
-    return opts.bg_volume <= 0 ? dbToLinear(opts.bg_volume) : opts.bg_volume;
-  }
-  if (typeof opts.bgVolume === "number") return opts.bgVolume;
+// Mantém o volume da trilha fixo pelo preset (sem override por request).
+function resolveBgVol(fallbackLinear) {
   return fallbackLinear;
 }
 
@@ -163,12 +155,9 @@ function resolveBgEndGap(opts) {
   return Math.max(gap, 0);
 }
 
-// Resolve teto absoluto da trilha (dB) — nunca acima de -12dB
-function resolveBgVolumeMax(opts) {
-  let v = DEFAULT_BG_VOLUME_MAX_DB;
-  if (typeof opts.bgVolumeMax === "number") v = opts.bgVolumeMax;
-  else if (typeof opts.bg_volume_max === "number") v = opts.bg_volume_max;
-  return Math.min(-12, v);
+// Resolve teto absoluto da trilha (dB) — fixo (sem override por request)
+function resolveBgVolumeMax() {
+  return DEFAULT_BG_VOLUME_MAX_DB;
 }
 
 // ─── Limpeza de take ──────────────────────────────────────────────────
@@ -231,7 +220,7 @@ async function processStandardMix(opts) {
   const fadeOutStart = Math.max(p.fadeIn, bgEndTime - p.fadeOut);
   const totalDur = voiceDur + 0.5;
 
-  const bgVol = resolveBgVol(opts, p.bgVol);
+  const bgVol = resolveBgVol(p.bgVol);
   const compThr =
     typeof opts.bgCompressThreshold === "number"
       ? opts.bgCompressThreshold
@@ -245,7 +234,7 @@ async function processStandardMix(opts) {
         ? opts.bg_compress_ratio
         : DEFAULT_BG_COMPRESS_RATIO);
 
-  const bgMaxDb = resolveBgVolumeMax(opts);
+  const bgMaxDb = resolveBgVolumeMax();
   const bgMaxLin = dbToLinear(bgMaxDb);
   const masterCeiling = dbToLinear(p.ceiling ?? -0.8);
 
@@ -317,7 +306,7 @@ async function processJingleMix(opts) {
 
   const voiceChain = buildVoiceChain(p.voicePreset);
   const masterCeiling = dbToLinear(p.ceiling ?? -0.8);
-  const jingleVol = resolveBgVol(opts, p.bgVol);
+  const jingleVol = resolveBgVol(p.bgVol);
 
   const filter = [
     `[0:a]${voiceChain},adelay=${Math.round(jingleVoiceStart * 1000)}|${Math.round(jingleVoiceStart * 1000)}[v]`,
