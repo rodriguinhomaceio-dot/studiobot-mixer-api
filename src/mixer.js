@@ -134,6 +134,13 @@ function dbToLinear(db) {
   return Math.pow(10, db / 20);
 }
 
+// Resolve volume (linear) com prioridade: bgVolumeDb > bgVolume > default
+function resolveBgVol(opts, fallbackLinear) {
+  if (typeof opts.bgVolumeDb === "number") return dbToLinear(opts.bgVolumeDb);
+  if (typeof opts.bgVolume === "number") return opts.bgVolume;
+  return fallbackLinear;
+}
+
 // ─── Limpeza de take ──────────────────────────────────────────────────
 // Mais natural, sem loudness agressivo, menos compressão
 function cleanTake(inputFile, useIsolator = false) {
@@ -191,7 +198,9 @@ async function processStandardMix(opts) {
   const fadeOutStart = Math.max(p.fadeIn, bgEndTime - p.fadeOut);
   const totalDur = voiceDur + 0.5;
 
-  const bgVol = typeof opts.bgVolume === "number" ? opts.bgVolume : p.bgVol;
+  // Volume da trilha: bgVolumeDb (dB) > bgVolume (linear) > preset default
+  const bgVol = resolveBgVol(opts, p.bgVol);
+
   const compThr =
     typeof opts.bgCompressThreshold === "number"
       ? opts.bgCompressThreshold
@@ -278,9 +287,12 @@ async function processJingleMix(opts) {
   const voiceChain = buildVoiceChain(p.voicePreset);
   const masterCeiling = dbToLinear(p.ceiling ?? -0.6);
 
+  // Volume do jingle: bgVolumeDb (dB) > bgVolume (linear) > preset default
+  const jingleVol = resolveBgVol(opts, p.bgVol);
+
   const filter = [
     `[0:a]${voiceChain},adelay=${Math.round(jingleVoiceStart * 1000)}|${Math.round(jingleVoiceStart * 1000)}[v]`,
-    `[1:a]volume=${p.bgVol.toFixed(4)}[j]`,
+    `[1:a]volume=${jingleVol.toFixed(4)}[j]`,
     `[j][v]sidechaincompress=threshold=0.12:ratio=2.8:attack=15:release=400[ducked]`,
     `[ducked][v]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[mix]`,
     `[mix]alimiter=limit=${masterCeiling.toFixed(4)}:level=disabled:asc=1[out]`,
