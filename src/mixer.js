@@ -95,6 +95,7 @@ const VOICE_PRESETS = {
 const DEFAULT_BG_VOLUME_MAX_DB = -12.0;
 const DEFAULT_BG_COMPRESS_THRESHOLD_DB = -16;
 const DEFAULT_BG_COMPRESS_RATIO = 1.8;
+const DEFAULT_FINAL_GAIN_DB = 4.0;
 
 // Trilha termina JUNTO com a voz (sem gap)
 const BG_END_GAP_SEC = 0;
@@ -260,6 +261,9 @@ async function processStandardMix(opts) {
   const bgMaxDb = resolveBgVolumeMax();
   const bgMaxLin = dbToLinear(bgMaxDb);
   const masterCeiling = dbToLinear(p.ceiling ?? -0.8);
+  const finalGainDb = typeof opts.finalGainDb === "number"
+    ? opts.finalGainDb
+    : (typeof opts.final_gain_db === "number" ? opts.final_gain_db : DEFAULT_FINAL_GAIN_DB);
 
   const voiceChain = buildVoiceChain(p.voicePreset);
   const bgChain = [
@@ -277,7 +281,7 @@ async function processStandardMix(opts) {
     `[0:a]${voiceChain}[v]`,
     `[1:a]${bgChain}[b]`,
     `[v][b]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[mix]`,
-    `[mix]alimiter=limit=${masterCeiling.toFixed(4)}:level=disabled:asc=1[out]`,
+    `[mix]volume=${finalGainDb}dB,alimiter=limit=${masterCeiling.toFixed(4)}:level=disabled:asc=1[out]`,
   ].join(";");
 
   runFfmpeg([
@@ -329,6 +333,9 @@ async function processJingleMix(opts) {
 
   const voiceChain = buildVoiceChain(p.voicePreset);
   const masterCeiling = dbToLinear(p.ceiling ?? -0.8);
+  const finalGainDb = typeof opts.finalGainDb === "number"
+    ? opts.finalGainDb
+    : (typeof opts.final_gain_db === "number" ? opts.final_gain_db : DEFAULT_FINAL_GAIN_DB);
   const jingleVol = resolveBgVol(p.bgVol);
 
   const filter = [
@@ -336,7 +343,7 @@ async function processJingleMix(opts) {
     `[1:a]volume=${jingleVol.toFixed(4)}[j]`,
     `[j][v]sidechaincompress=threshold=0.08:ratio=4:attack=10:release=350[ducked]`,
     `[ducked][v]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[mix]`,
-    `[mix]alimiter=limit=${masterCeiling.toFixed(4)}:level=disabled:asc=1[out]`,
+    `[mix]volume=${finalGainDb}dB,alimiter=limit=${masterCeiling.toFixed(4)}:level=disabled:asc=1[out]`,
   ].join(";");
 
   runFfmpeg([
