@@ -95,7 +95,7 @@ const VOICE_PRESETS = {
 const DEFAULT_BG_VOLUME_MAX_DB = -12.0;
 const DEFAULT_BG_COMPRESS_THRESHOLD_DB = -16;
 const DEFAULT_BG_COMPRESS_RATIO = 1.8;
-const DEFAULT_FINAL_GAIN_DB = 4.0;
+const DEFAULT_FINAL_GAIN_DB = 7.0;
 
 // Trilha termina JUNTO com a voz (sem gap)
 const BG_END_GAP_SEC = 0;
