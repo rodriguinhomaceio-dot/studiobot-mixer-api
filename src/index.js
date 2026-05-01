@@ -41,7 +41,7 @@ async function uploadToStorage(localPath, { orderId, suffix = "mixed" }) {
     .from("order-files")
     .upload(fileName, buffer, { contentType: "audio/mpeg", upsert: true });
 
-  try { fs.unlinkSync(localPath); } catch {}
+  try { fs.unlinkSync(localPath); } catch { /* ignore cleanup errors */ }
 
   if (error) {
     throw new Error(`Storage upload failed: ${error.message}`);
