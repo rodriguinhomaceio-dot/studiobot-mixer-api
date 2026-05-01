@@ -19,6 +19,29 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
+/**
+ * TRIAGEM (fluxo corrigido)
+ *
+ * Etapa 1 — validação do texto
+ * Pergunta 1: "Seu texto está com 21s. Quer alterar algo?"
+ * Pergunta 2: "Pode gravar?"
+ *
+ * Etapa 2 — escolha de trilha (pergunta única)
+ * Faça esta pergunta apenas se o cliente AINDA NÃO informou OFF/MIXADO antes:
+ *
+ * "Antes de finalizar, como você quer a trilha de fundo? 🎵
+ *
+ * *1* — Apenas OFF (voz pura, sem trilha)
+ * *2* — Gerar trilha + efeitos sob medida na hora (IA)
+ * *3* — Mixar com trilha cadastrada da categoria 🎶
+ *
+ * Responda *1*, *2* ou *3*."
+ *
+ * Regra anti-duplicação:
+ * Se o cliente já respondeu "OFF", "MIXADO", "1", "2" ou "3",
+ * não repetir a pergunta de trilha.
+ */
+
 // ─── Auth middleware ─────────────────────────────────────────────────
 function authenticate(req, res, next) {
   if (API_SECRET) {
@@ -41,13 +64,21 @@ async function uploadToStorage(localPath, { orderId, suffix = "mixed" }) {
     .from("order-files")
     .upload(fileName, buffer, { contentType: "audio/mpeg", upsert: true });
 
-  try { fs.unlinkSync(localPath); } catch {}
+  // Evita crash se houver falha ao remover arquivo temporário
+  try {
+    fs.unlinkSync(localPath);
+  } catch {
+    // ignore cleanup errors
+  }
 
   if (error) {
     throw new Error(`Storage upload failed: ${error.message}`);
   }
 
-  const { data: urlData } = supabase.storage.from("order-files").getPublicUrl(fileName);
+  const { data: urlData } = supabase.storage
+    .from("order-files")
+    .getPublicUrl(fileName);
+
   return urlData.publicUrl;
 }
 
@@ -59,6 +90,7 @@ app.get("/health", (req, res) => {
 // ─── Main mix endpoint ───────────────────────────────────────────────
 app.post("/mix", authenticate, async (req, res) => {
   const startTime = Date.now();
+
   try {
     const {
       voice_url,
@@ -103,10 +135,12 @@ app.post("/mix", authenticate, async (req, res) => {
       }
 
       let available = tracks;
+
       if (exclude_track_url && tracks.length > 1) {
         const filtered = tracks.filter((t) => t.file_url !== exclude_track_url);
         if (filtered.length > 0) available = filtered;
       }
+
       const chosen = available[Math.floor(Math.random() * available.length)];
       backgroundUrl = chosen.file_url;
       bgTrackName = chosen.name;
@@ -135,16 +169,21 @@ app.post("/mix", authenticate, async (req, res) => {
         mixed_audio_url: publicUrl,
         mix_preset: preset,
       };
+
       if (!voice_only && !jingle_url && backgroundUrl) {
         updateData.bg_track_url = backgroundUrl;
       }
-      await supabase.from("locution_orders").update(updateData).eq("id", order_id);
+
+      await supabase
+        .from("locution_orders")
+        .update(updateData)
+        .eq("id", order_id);
     }
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     console.log(`[mix] Complete in ${elapsed}s: ${publicUrl}`);
 
-    res.json({
+    return res.json({
       mixed_audio_url: publicUrl,
       bg_track_name: bgTrackName,
       category: preset,
@@ -155,14 +194,14 @@ app.post("/mix", authenticate, async (req, res) => {
     });
   } catch (err) {
     console.error("[mix] Error:", err);
-    res.status(500).json({ error: err.message || "Internal server error" });
+    return res.status(500).json({ error: err.message || "Internal server error" });
   }
 });
 
-// ─── NEW: Clean take endpoint ────────────────────────────────────────
-// Recebe URL de áudio + lista de cuts [{start,end}] e devolve URL limpa.
+// ─── Clean take endpoint ─────────────────────────────────────────────
 app.post("/clean-take", authenticate, async (req, res) => {
   const startTime = Date.now();
+
   try {
     const { voice_url, cuts, order_id } = req.body;
 
@@ -171,7 +210,9 @@ app.post("/clean-take", authenticate, async (req, res) => {
     }
 
     const cutsArr = Array.isArray(cuts) ? cuts : [];
-    console.log(`[clean-take] Starting: order=${order_id || "none"}, cuts=${cutsArr.length}`);
+    console.log(
+      `[clean-take] Starting: order=${order_id || "none"}, cuts=${cutsArr.length}`
+    );
 
     const outputPath = await cleanTake({
       voiceUrl: voice_url,
@@ -184,9 +225,11 @@ app.post("/clean-take", authenticate, async (req, res) => {
     });
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(`[clean-take] Complete in ${elapsed}s: ${cleanedUrl} (${cutsArr.length} cuts)`);
+    console.log(
+      `[clean-take] Complete in ${elapsed}s: ${cleanedUrl} (${cutsArr.length} cuts)`
+    );
 
-    res.json({
+    return res.json({
       cleaned_url: cleanedUrl,
       cuts_applied: cutsArr.length,
       success: true,
@@ -194,7 +237,7 @@ app.post("/clean-take", authenticate, async (req, res) => {
     });
   } catch (err) {
     console.error("[clean-take] Error:", err);
-    res.status(500).json({ error: err.message || "Internal server error" });
+    return res.status(500).json({ error: err.message || "Internal server error" });
   }
 });
 
