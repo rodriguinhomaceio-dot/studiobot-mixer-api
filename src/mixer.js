@@ -5,7 +5,6 @@ const os = require("os");
 const { v4: uuidv4 } = require("uuid");
 
 // ─── PRESETS DE MASTER ────────────────────────────────────────────────
-// Voz à frente, trilha bem discreta (mais baixa)
 const PRESETS = {
   nd_padrao: {
     comp: 0.25, width: 1.35, limit: 0.32, ceiling: -0.3, release: 1.2,
@@ -29,7 +28,6 @@ const PRESETS = {
   },
 };
 
-// Aliases
 PRESETS.varejo = PRESETS.nd_padrao;
 PRESETS.institucional = PRESETS.nd_institucional;
 PRESETS.radio_indoor = PRESETS.nd_padrao;
@@ -37,67 +35,38 @@ PRESETS.jingle = PRESETS.nd_jingle;
 PRESETS.politica = PRESETS.nd_institucional;
 
 // ─── PRESETS DE VOZ ───────────────────────────────────────────────────
-// Voz à frente, com leve compressão para presença consistente
-// comp: { threshold (dB), ratio, attack (ms), release (ms), makeup }
 const VOICE_PRESETS = {
   varejo: {
-    hpf: 75,
-    presenceFreq: 3000,
-    presenceGain: 1.2,
-    presenceQ: 1.0,
-    deesserFreq: 6500,
-    deesserGain: -1.2,
+    hpf: 75, presenceFreq: 3000, presenceGain: 1.2, presenceQ: 1.0,
+    deesserFreq: 6500, deesserGain: -1.2,
     comp: { threshold: -18, ratio: 2.2, attack: 8, release: 180, makeup: 1.05 },
-    loudnormI: -19,
-    loudnormLRA: 14,
-    volume: 0.55,
+    loudnormI: -19, loudnormLRA: 14, volume: 0.55,
   },
   institucional: {
-    hpf: 75,
-    presenceFreq: 2800,
-    presenceGain: 0.9,
-    presenceQ: 1.0,
-    deesserFreq: 6500,
-    deesserGain: -1.0,
+    hpf: 75, presenceFreq: 2800, presenceGain: 0.9, presenceQ: 1.0,
+    deesserFreq: 6500, deesserGain: -1.0,
     comp: { threshold: -20, ratio: 2.0, attack: 10, release: 220, makeup: 1.04 },
-    loudnormI: -19.5,
-    loudnormLRA: 15,
-    volume: 0.52,
+    loudnormI: -19.5, loudnormLRA: 15, volume: 0.52,
   },
   radio_indoor: {
-    hpf: 80,
-    presenceFreq: 3200,
-    presenceGain: 1.4,
-    presenceQ: 1.0,
-    deesserFreq: 6500,
-    deesserGain: -1.3,
+    hpf: 80, presenceFreq: 3200, presenceGain: 1.4, presenceQ: 1.0,
+    deesserFreq: 6500, deesserGain: -1.3,
     comp: { threshold: -18, ratio: 2.4, attack: 8, release: 180, makeup: 1.06 },
-    loudnormI: -19,
-    loudnormLRA: 14,
-    volume: 0.56,
+    loudnormI: -19, loudnormLRA: 14, volume: 0.56,
   },
   jingle: {
-    hpf: 80,
-    presenceFreq: 3000,
-    presenceGain: 1.2,
-    presenceQ: 1.0,
-    deesserFreq: 6500,
-    deesserGain: -1.0,
+    hpf: 80, presenceFreq: 3000, presenceGain: 1.2, presenceQ: 1.0,
+    deesserFreq: 6500, deesserGain: -1.0,
     comp: { threshold: -17, ratio: 2.5, attack: 8, release: 160, makeup: 1.06 },
-    loudnormI: -18.5,
-    loudnormLRA: 13,
-    volume: 0.58,
+    loudnormI: -18.5, loudnormLRA: 13, volume: 0.58,
   },
 };
 
 // ─── Defaults ─────────────────────────────────────────────────────────
-// Trilha bem discreta: teto baixo e compressão firme
 const DEFAULT_BG_VOLUME_MAX_DB = -12.0;
 const DEFAULT_BG_COMPRESS_THRESHOLD_DB = -16;
 const DEFAULT_BG_COMPRESS_RATIO = 1.8;
 const DEFAULT_FINAL_GAIN_DB = 7.0;
-
-// Trilha termina JUNTO com a voz (sem gap)
 const BG_END_GAP_SEC = 0;
 
 // ─── Utilidades ───────────────────────────────────────────────────────
@@ -142,13 +111,10 @@ function dbToLinear(db) {
   return Math.pow(10, db / 20);
 }
 
-// Mantém o volume da trilha fixo pelo preset (sem override por request).
 function resolveBgVol(fallbackLinear) {
   return fallbackLinear;
 }
 
-// Resolve gap final da trilha (segundos antes do fim da voz)
-// Por padrão 0 — trilha termina junto com a voz
 function resolveBgEndGap(opts) {
   let gap = BG_END_GAP_SEC;
   if (typeof opts.bgEndOffset === "number") gap = opts.bgEndOffset;
@@ -156,7 +122,6 @@ function resolveBgEndGap(opts) {
   return Math.max(gap, 0);
 }
 
-// Resolve teto absoluto da trilha (dB) — fixo (sem override por request)
 function resolveBgVolumeMax() {
   return DEFAULT_BG_VOLUME_MAX_DB;
 }
@@ -181,6 +146,7 @@ async function cleanTake(input, useIsolator = false) {
     "afftdn=nf=-18",
     "loudnorm=I=-20:TP=-1.5:LRA=15",
   ];
+
   runFfmpeg([
     "-i", inputFile,
     "-af", filters.join(","),
@@ -192,9 +158,7 @@ async function cleanTake(input, useIsolator = false) {
   ]);
 
   if (downloadedInputFile) {
-    try {
-      fs.unlinkSync(downloadedInputFile);
-    } catch {}
+    try { fs.unlinkSync(downloadedInputFile); } catch {}
   }
 
   return out;
@@ -235,7 +199,6 @@ async function processStandardMix(opts) {
 
   const voiceDur = ffprobeDuration(voiceFile);
 
-  // Gap final da trilha (padrão 0 — trilha termina junto com a voz)
   const bgEndGap = resolveBgEndGap(opts);
   const bgEndTime = Math.max(
     p.fadeIn + p.fadeOut + 0.1,
@@ -245,12 +208,14 @@ async function processStandardMix(opts) {
   const totalDur = voiceDur + 0.5;
 
   const bgVol = resolveBgVol(p.bgVol);
+
   const compThr =
     typeof opts.bgCompressThreshold === "number"
       ? opts.bgCompressThreshold
       : (typeof opts.bg_compress_threshold === "number"
         ? opts.bg_compress_threshold
         : DEFAULT_BG_COMPRESS_THRESHOLD_DB);
+
   const compRatio =
     typeof opts.bgCompressRatio === "number"
       ? opts.bgCompressRatio
@@ -261,11 +226,13 @@ async function processStandardMix(opts) {
   const bgMaxDb = resolveBgVolumeMax();
   const bgMaxLin = dbToLinear(bgMaxDb);
   const masterCeiling = dbToLinear(p.ceiling ?? -0.8);
+
   const finalGainDb = typeof opts.finalGainDb === "number"
     ? opts.finalGainDb
     : (typeof opts.final_gain_db === "number" ? opts.final_gain_db : DEFAULT_FINAL_GAIN_DB);
 
   const voiceChain = buildVoiceChain(p.voicePreset);
+
   const bgChain = [
     "highpass=f=35",
     `acompressor=threshold=${compThr}dB:ratio=${compRatio}:attack=20:release=250:makeup=1.0`,
@@ -328,21 +295,27 @@ async function processJingleMix(opts) {
 
   const voiceDur = ffprobeDuration(voiceFile);
   const jingleDur = ffprobeDuration(jingleFile);
+
   const endTime = jingleEndTime || jingleVoiceStart + voiceDur + 2;
   const totalDur = Math.max(jingleDur, endTime + 1);
 
   const voiceChain = buildVoiceChain(p.voicePreset);
   const masterCeiling = dbToLinear(p.ceiling ?? -0.8);
+
   const finalGainDb = typeof opts.finalGainDb === "number"
     ? opts.finalGainDb
     : (typeof opts.final_gain_db === "number" ? opts.final_gain_db : DEFAULT_FINAL_GAIN_DB);
-  const jingleVol = resolveBgVol(p.bgVol);
 
+  const jingleVol = resolveBgVol(p.bgVol);
+  const delayMs = Math.round(jingleVoiceStart * 1000);
+
+  // FIX: asplit duplica a voz para usar duas vezes (sidechain + amix).
+  // Um pad de saída do ffmpeg só pode ser consumido uma vez.
   const filter = [
-    `[0:a]${voiceChain},adelay=${Math.round(jingleVoiceStart * 1000)}|${Math.round(jingleVoiceStart * 1000)}[v]`,
+    `[0:a]${voiceChain},adelay=${delayMs}|${delayMs},asplit=2[v1][v2]`,
     `[1:a]volume=${jingleVol.toFixed(4)}[j]`,
-    `[j][v]sidechaincompress=threshold=0.08:ratio=4:attack=10:release=350[ducked]`,
-    `[ducked][v]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[mix]`,
+    `[j][v1]sidechaincompress=threshold=0.08:ratio=4:attack=10:release=350[ducked]`,
+    `[ducked][v2]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[mix]`,
     `[mix]volume=${finalGainDb}dB,alimiter=limit=${masterCeiling.toFixed(4)}:level=disabled:asc=1[out]`,
   ].join(";");
 
@@ -377,6 +350,7 @@ async function processVoiceOnly(opts) {
 
   const p = PRESETS[preset] || PRESETS.nd_voice;
   const voiceFile = tmpFile("mp3");
+
   await downloadFile(voiceUrl, voiceFile);
 
   const voiceChain = buildVoiceChain(p.voicePreset);
@@ -393,10 +367,7 @@ async function processVoiceOnly(opts) {
     "-y", outputFile,
   ]);
 
-  try {
-    fs.unlinkSync(voiceFile);
-  } catch {}
-
+  try { fs.unlinkSync(voiceFile); } catch {}
   return outputFile;
 }
 
