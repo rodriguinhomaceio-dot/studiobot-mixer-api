@@ -5,7 +5,6 @@ const os = require("os");
 const { v4: uuidv4 } = require("uuid");
 
 // ─── PRESETS DE MASTER ────────────────────────────────────────────────
-// Voz à frente, trilha bem discreta (mais baixa)
 const PRESETS = {
   nd_padrao: {
     comp: 0.25, width: 1.35, limit: 0.32, ceiling: -0.3, release: 1.2,
@@ -28,8 +27,6 @@ const PRESETS = {
     bgVol: 0.15, fadeIn: 1.8, fadeOut: 0.6, voicePreset: "institucional",
   },
 };
-
-// Aliases
 PRESETS.varejo = PRESETS.nd_padrao;
 PRESETS.institucional = PRESETS.nd_institucional;
 PRESETS.radio_indoor = PRESETS.nd_padrao;
@@ -81,8 +78,6 @@ function runFfmpeg(args) {
     execFileSync("ffmpeg", args, { stdio: ["ignore", "pipe", "pipe"] });
   } catch (err) {
     const stderr = err.stderr ? err.stderr.toString() : String(err);
-    // Pega o FINAL do stderr — é onde o erro real aparece.
-    // O começo é só o cabeçalho de configuração do ffmpeg.
     const tail = stderr.length > 2000 ? stderr.slice(-2000) : stderr;
     throw new Error(`ffmpeg failed:\n${tail}`);
   }
@@ -299,7 +294,6 @@ async function processJingleMix(opts) {
 
   const voiceDur = ffprobeDuration(voiceFile);
   const jingleDur = ffprobeDuration(jingleFile);
-
   const endTime = jingleEndTime || jingleVoiceStart + voiceDur + 2;
   const totalDur = Math.max(jingleDur, endTime + 1);
 
@@ -310,11 +304,16 @@ async function processJingleMix(opts) {
     : (typeof opts.final_gain_db === "number" ? opts.final_gain_db : DEFAULT_FINAL_GAIN_DB);
   const jingleVol = resolveBgVol(p.bgVol);
 
+  const delayMs = Math.round(jingleVoiceStart * 1000);
+
+  // FIX: duplicar [v] com asplit, pois [v] é consumido duas vezes
+  // (uma como sidechain do sidechaincompress e outra no amix).
+  // Labels intermediários no FFmpeg só podem ser consumidos uma vez.
   const filter = [
-    `[0:a]${voiceChain},adelay=${Math.round(jingleVoiceStart * 1000)}|${Math.round(jingleVoiceStart * 1000)}[v]`,
+    `[0:a]${voiceChain},adelay=${delayMs}|${delayMs},asplit=2[v1][v2]`,
     `[1:a]volume=${jingleVol.toFixed(4)}[j]`,
-    `[j][v]sidechaincompress=threshold=0.08:ratio=4:attack=10:release=350[ducked]`,
-    `[ducked][v]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[mix]`,
+    `[j][v1]sidechaincompress=threshold=0.08:ratio=4:attack=10:release=350[ducked]`,
+    `[ducked][v2]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[mix]`,
     `[mix]volume=${finalGainDb}dB,alimiter=limit=${masterCeiling.toFixed(4)}:level=disabled:asc=1[out]`,
   ].join(";");
 
