@@ -1,5 +1,6 @@
 const express = require("express");
-const { createClient } = require("ws");
+const ws = require("ws");
+const { createClient } = require("@supabase/supabase-js");
 const { mixAudio, cleanTake } = require("./mixer");
 const { v4: uuidv4 } = require("uuid");
 const fs = require("fs");
@@ -17,7 +18,9 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
   process.exit(1);
 }
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+  realtime: { transport: ws }
+});
 
 // ─── Auth middleware ─────────────────────────────────────────────────
 function authenticate(req, res, next) {
