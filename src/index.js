@@ -1,5 +1,5 @@
 const express = require("express");
-const { createClient } = require("@supabase/supabase-js");
+const { createClient } = require("ws");
 const { mixAudio, cleanTake } = require("./mixer");
 const { v4: uuidv4 } = require("uuid");
 const fs = require("fs");
