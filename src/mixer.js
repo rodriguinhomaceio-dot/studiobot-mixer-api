@@ -37,67 +37,42 @@ PRESETS.jingle = PRESETS.nd_jingle;
 PRESETS.politica = PRESETS.nd_institucional;
 
 // ─── PRESETS DE VOZ ───────────────────────────────────────────────────
-// Voz à frente, com leve compressão para presença consistente
-// comp: { threshold (dB), ratio, attack (ms), release (ms), makeup }
 const VOICE_PRESETS = {
   varejo: {
     hpf: 75,
-    presenceFreq: 3000,
-    presenceGain: 1.2,
-    presenceQ: 1.0,
-    deesserFreq: 6500,
-    deesserGain: -1.2,
+    presenceFreq: 3000, presenceGain: 1.2, presenceQ: 1.0,
+    deesserFreq: 6500, deesserGain: -1.2,
     comp: { threshold: -18, ratio: 2.2, attack: 8, release: 180, makeup: 1.05 },
-    loudnormI: -19,
-    loudnormLRA: 14,
-    volume: 0.55,
+    loudnormI: -19, loudnormLRA: 14, volume: 0.55,
   },
   institucional: {
     hpf: 75,
-    presenceFreq: 2800,
-    presenceGain: 0.9,
-    presenceQ: 1.0,
-    deesserFreq: 6500,
-    deesserGain: -1.0,
+    presenceFreq: 2800, presenceGain: 0.9, presenceQ: 1.0,
+    deesserFreq: 6500, deesserGain: -1.0,
     comp: { threshold: -20, ratio: 2.0, attack: 10, release: 220, makeup: 1.04 },
-    loudnormI: -19.5,
-    loudnormLRA: 15,
-    volume: 0.52,
+    loudnormI: -19.5, loudnormLRA: 15, volume: 0.52,
   },
   radio_indoor: {
     hpf: 80,
-    presenceFreq: 3200,
-    presenceGain: 1.4,
-    presenceQ: 1.0,
-    deesserFreq: 6500,
-    deesserGain: -1.3,
+    presenceFreq: 3200, presenceGain: 1.4, presenceQ: 1.0,
+    deesserFreq: 6500, deesserGain: -1.3,
     comp: { threshold: -18, ratio: 2.4, attack: 8, release: 180, makeup: 1.06 },
-    loudnormI: -19,
-    loudnormLRA: 14,
-    volume: 0.56,
+    loudnormI: -19, loudnormLRA: 14, volume: 0.56,
   },
   jingle: {
     hpf: 80,
-    presenceFreq: 3000,
-    presenceGain: 1.2,
-    presenceQ: 1.0,
-    deesserFreq: 6500,
-    deesserGain: -1.0,
+    presenceFreq: 3000, presenceGain: 1.2, presenceQ: 1.0,
+    deesserFreq: 6500, deesserGain: -1.0,
     comp: { threshold: -17, ratio: 2.5, attack: 8, release: 160, makeup: 1.06 },
-    loudnormI: -18.5,
-    loudnormLRA: 13,
-    volume: 0.58,
+    loudnormI: -18.5, loudnormLRA: 13, volume: 0.58,
   },
 };
 
 // ─── Defaults ─────────────────────────────────────────────────────────
-// Trilha bem discreta: teto baixo e compressão firme
 const DEFAULT_BG_VOLUME_MAX_DB = -12.0;
 const DEFAULT_BG_COMPRESS_THRESHOLD_DB = -16;
 const DEFAULT_BG_COMPRESS_RATIO = 1.8;
 const DEFAULT_FINAL_GAIN_DB = 7.0;
-
-// Trilha termina JUNTO com a voz (sem gap)
 const BG_END_GAP_SEC = 0;
 
 // ─── Utilidades ───────────────────────────────────────────────────────
@@ -106,7 +81,10 @@ function runFfmpeg(args) {
     execFileSync("ffmpeg", args, { stdio: ["ignore", "pipe", "pipe"] });
   } catch (err) {
     const stderr = err.stderr ? err.stderr.toString() : String(err);
-    throw new Error(`ffmpeg failed: ${stderr.substring(0, 700)}`);
+    // Pega o FINAL do stderr — é onde o erro real aparece.
+    // O começo é só o cabeçalho de configuração do ffmpeg.
+    const tail = stderr.length > 2000 ? stderr.slice(-2000) : stderr;
+    throw new Error(`ffmpeg failed:\n${tail}`);
   }
 }
 
@@ -142,13 +120,10 @@ function dbToLinear(db) {
   return Math.pow(10, db / 20);
 }
 
-// Mantém o volume da trilha fixo pelo preset (sem override por request).
 function resolveBgVol(fallbackLinear) {
   return fallbackLinear;
 }
 
-// Resolve gap final da trilha (segundos antes do fim da voz)
-// Por padrão 0 — trilha termina junto com a voz
 function resolveBgEndGap(opts) {
   let gap = BG_END_GAP_SEC;
   if (typeof opts.bgEndOffset === "number") gap = opts.bgEndOffset;
@@ -156,7 +131,6 @@ function resolveBgEndGap(opts) {
   return Math.max(gap, 0);
 }
 
-// Resolve teto absoluto da trilha (dB) — fixo (sem override por request)
 function resolveBgVolumeMax() {
   return DEFAULT_BG_VOLUME_MAX_DB;
 }
@@ -181,6 +155,7 @@ async function cleanTake(input, useIsolator = false) {
     "afftdn=nf=-18",
     "loudnorm=I=-20:TP=-1.5:LRA=15",
   ];
+
   runFfmpeg([
     "-i", inputFile,
     "-af", filters.join(","),
@@ -192,11 +167,8 @@ async function cleanTake(input, useIsolator = false) {
   ]);
 
   if (downloadedInputFile) {
-    try {
-      fs.unlinkSync(downloadedInputFile);
-    } catch {}
+    try { fs.unlinkSync(downloadedInputFile); } catch {}
   }
-
   return out;
 }
 
@@ -234,8 +206,6 @@ async function processStandardMix(opts) {
   ]);
 
   const voiceDur = ffprobeDuration(voiceFile);
-
-  // Gap final da trilha (padrão 0 — trilha termina junto com a voz)
   const bgEndGap = resolveBgEndGap(opts);
   const bgEndTime = Math.max(
     p.fadeIn + p.fadeOut + 0.1,
@@ -266,6 +236,7 @@ async function processStandardMix(opts) {
     : (typeof opts.final_gain_db === "number" ? opts.final_gain_db : DEFAULT_FINAL_GAIN_DB);
 
   const voiceChain = buildVoiceChain(p.voicePreset);
+
   const bgChain = [
     "highpass=f=35",
     `acompressor=threshold=${compThr}dB:ratio=${compRatio}:attack=20:release=250:makeup=1.0`,
@@ -328,6 +299,7 @@ async function processJingleMix(opts) {
 
   const voiceDur = ffprobeDuration(voiceFile);
   const jingleDur = ffprobeDuration(jingleFile);
+
   const endTime = jingleEndTime || jingleVoiceStart + voiceDur + 2;
   const totalDur = Math.max(jingleDur, endTime + 1);
 
@@ -393,10 +365,7 @@ async function processVoiceOnly(opts) {
     "-y", outputFile,
   ]);
 
-  try {
-    fs.unlinkSync(voiceFile);
-  } catch {}
-
+  try { fs.unlinkSync(voiceFile); } catch {}
   return outputFile;
 }
 
