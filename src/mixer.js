@@ -99,9 +99,7 @@ function ffprobeDuration(file) {
 
 async function downloadFile(url, dest) {
   const resp = await fetch(url);
-  if (!resp.ok) {
-    throw new Error(`download failed ${resp.status}: ${url}`);
-  }
+  if (!resp.ok) throw new Error(`download failed ${resp.status}: ${url}`);
   const buf = Buffer.from(await resp.arrayBuffer());
   fs.writeFileSync(dest, buf);
   return dest;
@@ -137,9 +135,7 @@ async function cleanTake(input, useIsolator = false) {
   let downloadedInputFile = null;
 
   if (input && typeof input === "object") {
-    if (!input.voiceUrl) {
-      throw new Error("cleanTake requires voiceUrl");
-    }
+    if (!input.voiceUrl) throw new Error("cleanTake requires voiceUrl");
     downloadedInputFile = tmpFile("mp3");
     await downloadFile(input.voiceUrl, downloadedInputFile);
     inputFile = downloadedInputFile;
@@ -202,26 +198,21 @@ async function processStandardMix(opts) {
 
   const voiceDur = ffprobeDuration(voiceFile);
   const bgEndGap = resolveBgEndGap(opts);
-  const bgEndTime = Math.max(
-    p.fadeIn + p.fadeOut + 0.1,
-    voiceDur - bgEndGap
-  );
+  const bgEndTime = Math.max(p.fadeIn + p.fadeOut + 0.1, voiceDur - bgEndGap);
   const fadeOutStart = Math.max(p.fadeIn, bgEndTime - p.fadeOut);
   const totalDur = voiceDur + 0.5;
-
   const bgVol = resolveBgVol(p.bgVol);
-  const compThr =
-    typeof opts.bgCompressThreshold === "number"
-      ? opts.bgCompressThreshold
-      : (typeof opts.bg_compress_threshold === "number"
-        ? opts.bg_compress_threshold
-        : DEFAULT_BG_COMPRESS_THRESHOLD_DB);
-  const compRatio =
-    typeof opts.bgCompressRatio === "number"
-      ? opts.bgCompressRatio
-      : (typeof opts.bg_compress_ratio === "number"
-        ? opts.bg_compress_ratio
-        : DEFAULT_BG_COMPRESS_RATIO);
+
+  const compThr = typeof opts.bgCompressThreshold === "number"
+    ? opts.bgCompressThreshold
+    : (typeof opts.bg_compress_threshold === "number"
+      ? opts.bg_compress_threshold
+      : DEFAULT_BG_COMPRESS_THRESHOLD_DB);
+  const compRatio = typeof opts.bgCompressRatio === "number"
+    ? opts.bgCompressRatio
+    : (typeof opts.bg_compress_ratio === "number"
+      ? opts.bg_compress_ratio
+      : DEFAULT_BG_COMPRESS_RATIO);
 
   const bgMaxDb = resolveBgVolumeMax();
   const bgMaxLin = dbToLinear(bgMaxDb);
@@ -264,15 +255,15 @@ async function processStandardMix(opts) {
     "-y", outputFile,
   ]);
 
-  try {
-    fs.unlinkSync(voiceFile);
-    fs.unlinkSync(bgFile);
-  } catch {}
-
+  try { fs.unlinkSync(voiceFile); fs.unlinkSync(bgFile); } catch {}
   return outputFile;
 }
 
-// ─── MIX com jingle ───────────────────────────────────────────────────
+// ─── MIX com jingle (CORRIGIDO) ───────────────────────────────────────
+// Honra jingleEndTime: voz toca por cima do início do jingle (com ducking)
+// até voiceEnd; depois pula pra jingleEndTime e toca a cauda com fade-in.
+// Crossfade entre os dois trechos elimina corte seco. Loudnorm final
+// equaliza percepção entre trecho com voz e cauda solo (sem salto de volume).
 async function processJingleMix(opts) {
   const {
     voiceUrl,
@@ -294,28 +285,77 @@ async function processJingleMix(opts) {
 
   const voiceDur = ffprobeDuration(voiceFile);
   const jingleDur = ffprobeDuration(jingleFile);
-  const endTime = jingleEndTime || jingleVoiceStart + voiceDur + 2;
-  const totalDur = Math.max(jingleDur, endTime + 1);
 
-  const voiceChain = buildVoiceChain(p.voicePreset);
+  const voiceStart = Math.max(0, Number(jingleVoiceStart) || 0);
+  const voiceEnd = voiceStart + voiceDur;
+  // Se jingleEndTime não foi enviado ou é inválido, cai pro comportamento antigo
+  // (jingle inteiro com ducking).
+  const tailStart = (typeof jingleEndTime === "number" && jingleEndTime > 0 && jingleEndTime < jingleDur)
+    ? jingleEndTime
+    : null;
+
   const masterCeiling = dbToLinear(p.ceiling ?? -0.8);
   const finalGainDb = typeof opts.finalGainDb === "number"
     ? opts.finalGainDb
     : (typeof opts.final_gain_db === "number" ? opts.final_gain_db : DEFAULT_FINAL_GAIN_DB);
   const jingleVol = resolveBgVol(p.bgVol);
+  const delayMs = Math.round(voiceStart * 1000);
+  const voiceChain = buildVoiceChain(p.voicePreset);
 
-  const delayMs = Math.round(jingleVoiceStart * 1000);
+  let filter;
+  let totalDur;
 
-  // FIX: duplicar [v] com asplit, pois [v] é consumido duas vezes
-  // (uma como sidechain do sidechaincompress e outra no amix).
-  // Labels intermediários no FFmpeg só podem ser consumidos uma vez.
-  const filter = [
-    `[0:a]${voiceChain},adelay=${delayMs}|${delayMs},asplit=2[v1][v2]`,
-    `[1:a]volume=${jingleVol.toFixed(4)}[j]`,
-    `[j][v1]sidechaincompress=threshold=0.08:ratio=4:attack=10:release=350[ducked]`,
-    `[ducked][v2]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[mix]`,
-    `[mix]volume=${finalGainDb}dB,alimiter=limit=${masterCeiling.toFixed(4)}:level=disabled:asc=1[out]`,
-  ].join(";");
+  if (tailStart !== null) {
+    // ─── Caminho NOVO: head (0→voiceEnd com ducking) + tail (tailStart→fim)
+    const tailDur = Math.max(0.3, jingleDur - tailStart);
+    const headDur = Math.max(voiceEnd, voiceStart + 0.5);
+    const crossfade = 0.4;       // crossfade entre head e tail
+    const tailFadeIn = 0.4;      // fade-in suave da cauda
+    const tailFadeOut = 0.8;     // fade-out no encerramento final
+    const tailFadeOutStart = Math.max(0, tailDur - tailFadeOut);
+    totalDur = headDur + tailDur - crossfade + 0.3;
+
+    filter = [
+      // Voz: chain + delay até voiceStart + split (sidechain + amix)
+      `[0:a]${voiceChain},adelay=${delayMs}|${delayMs},apad=pad_dur=0.2,asplit=2[v1][v2]`,
+
+      // HEAD do jingle: 0 → headDur (volume cheio antes do ducking)
+      `[1:a]atrim=0:${headDur.toFixed(2)},asetpts=PTS-STARTPTS,volume=${jingleVol.toFixed(4)}[jhead]`,
+
+      // TAIL do jingle: tailStart → fim, com fade-in e fade-out
+      `[1:a]atrim=${tailStart.toFixed(2)}:${jingleDur.toFixed(2)},asetpts=PTS-STARTPTS,` +
+        `volume=${jingleVol.toFixed(4)},` +
+        `afade=t=in:st=0:d=${tailFadeIn},` +
+        `afade=t=out:st=${tailFadeOutStart.toFixed(2)}:d=${tailFadeOut}[jtail]`,
+
+      // Ducking: jingle head abaixa quando voz fala
+      `[jhead][v1]sidechaincompress=threshold=0.08:ratio=4:attack=10:release=350[ducked]`,
+
+      // Mix voz + jingle ducked = head completo
+      `[ducked][v2]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[head]`,
+
+      // Crossfade head → tail (elimina corte seco no pulo)
+      `[head][jtail]acrossfade=d=${crossfade}:c1=tri:c2=tri[mix]`,
+
+      // Master: ganho + loudnorm (nivela head com tail) + limiter
+      `[mix]volume=${finalGainDb}dB,` +
+        `loudnorm=I=-16:TP=-1.5:LRA=11,` +
+        `alimiter=limit=${masterCeiling.toFixed(4)}:level=disabled:asc=1[out]`,
+    ].join(";");
+  } else {
+    // ─── Caminho LEGADO (sem jingleEndTime): jingle inteiro com ducking
+    totalDur = Math.max(jingleDur, voiceEnd + 1);
+    filter = [
+      `[0:a]${voiceChain},adelay=${delayMs}|${delayMs},asplit=2[v1][v2]`,
+      `[1:a]volume=${jingleVol.toFixed(4)}[j]`,
+      `[j][v1]sidechaincompress=threshold=0.08:ratio=4:attack=10:release=350[ducked]`,
+      `[ducked][v2]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[mix]`,
+      `[mix]volume=${finalGainDb}dB,` +
+        `loudnorm=I=-16:TP=-1.5:LRA=11,` +
+        `afade=t=out:st=${Math.max(0, jingleDur - 0.8).toFixed(2)}:d=0.8,` +
+        `alimiter=limit=${masterCeiling.toFixed(4)}:level=disabled:asc=1[out]`,
+    ].join(";");
+  }
 
   runFfmpeg([
     "-i", voiceFile,
@@ -330,11 +370,7 @@ async function processJingleMix(opts) {
     "-y", outputFile,
   ]);
 
-  try {
-    fs.unlinkSync(voiceFile);
-    fs.unlinkSync(jingleFile);
-  } catch {}
-
+  try { fs.unlinkSync(voiceFile); fs.unlinkSync(jingleFile); } catch {}
   return outputFile;
 }
 
@@ -348,6 +384,7 @@ async function processVoiceOnly(opts) {
 
   const p = PRESETS[preset] || PRESETS.nd_voice;
   const voiceFile = tmpFile("mp3");
+
   await downloadFile(voiceUrl, voiceFile);
 
   const voiceChain = buildVoiceChain(p.voicePreset);
